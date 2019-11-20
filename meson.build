@@ -25,7 +25,7 @@ project(
     [find_program('python', 'python2', 'python3'), 'bin/meson_get_version.py']
   ).stdout(),
   license : 'MIT',
-  meson_version : '>= 0.46',
+  meson_version : '>= 0.45',
   default_options : ['buildtype=debugoptimized', 'b_ndebug=if-release', 'c_std=c99', 'cpp_std=c++14']
 )
 
@@ -252,6 +252,16 @@ if with_gallium_tegra and not with_gallium_nouveau
   error('tegra driver requires nouveau driver')
 endif
 
+prog_pkgconfig = find_program('pkg-config')
+
+dep_minigui = dependency('minigui', version : '>= 4.1.0', required : false)
+if dep_minigui.found()
+  dep_minigui = declare_dependency(
+    compile_args : run_command(prog_pkgconfig, ['minigui', '--cflags']).stdout().split()
+  )
+  have_minigui = true
+endif
+
 if host_machine.system() == 'darwin'
   with_dri_platform = 'apple'
   pre_args += '-DBUILDING_MESA'
@@ -278,6 +288,10 @@ if _platforms.contains('auto')
     error('Unknown OS @0@. Please pass -Dplatforms to set platforms. Patches gladly accepted to fix this.'.format(
           host_machine.system()))
   endif
+
+  if have_minigui
+    _platforms += ['minigui']
+  endif
 endif
 
 with_platform_android = _platforms.contains('android')
@@ -286,6 +300,7 @@ with_platform_wayland = _platforms.contains('wayland')
 with_platform_drm = _platforms.contains('drm')
 with_platform_haiku = _platforms.contains('haiku')
 with_platform_surfaceless = _platforms.contains('surfaceless')
+with_platform_minigui = _platforms.contains('minigui')
 
 with_platforms = false
 if _platforms.length() != 0 and _platforms != ['']
@@ -437,8 +452,6 @@ if with_dri
     error('building dri drivers require at least one windowing system or classic osmesa')
   endif
 endif
-
-prog_pkgconfig = find_program('pkg-config')
 
 _vdpau = get_option('gallium-vdpau')
 if not system_has_kms_drm
@@ -759,6 +772,9 @@ if with_platform_android
 endif
 if with_platform_haiku
   pre_args += '-DHAVE_HAIKU_PLATFORM'
+endif
+if with_platform_minigui
+  pre_args += '-DHAVE_MINIGUI_PLATFORM'
 endif
 
 if meson.version().version_compare('>=0.50')

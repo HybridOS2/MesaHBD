@@ -23,6 +23,14 @@ Meson (`docs/meson.html <https://mesa3d.org/meson.html>`_):
   $ meson ..
   $ sudo ninja install
 
+VW: Use the following commands to configure:
+
+.. code-block:: sh
+
+  $ mkdir build
+  $ cd build
+  $ meson .. -Dgallium-drivers= -Dvulkan-drivers= -Dllvm=false
+  $ sudo ninja install
 
 Support
 -------
