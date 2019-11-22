@@ -278,7 +278,9 @@ endif
 
 _platforms = get_option('platforms')
 if _platforms.contains('auto')
-  if system_has_kms_drm
+  if have_minigui
+    _platforms = ['minigui', 'drm', 'surfaceless']
+  elif system_has_kms_drm
     _platforms = ['x11', 'wayland', 'drm', 'surfaceless']
   elif ['darwin', 'windows', 'cygwin'].contains(host_machine.system())
     _platforms = ['x11', 'surfaceless']
@@ -289,9 +291,6 @@ if _platforms.contains('auto')
           host_machine.system()))
   endif
 
-  if have_minigui
-    _platforms += ['minigui']
-  endif
 endif
 
 with_platform_android = _platforms.contains('android')
@@ -321,7 +320,9 @@ endif
 
 with_glx = get_option('glx')
 if with_glx == 'auto'
-  if with_dri
+  if with_platform_minigui
+    with_glx = 'disabled'
+  elif with_dri
     with_glx = 'dri'
   elif with_platform_haiku
     with_glx = 'disabled'

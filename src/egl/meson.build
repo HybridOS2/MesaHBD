@@ -129,6 +129,10 @@ if with_dri2
     deps_for_egl += dep_android
     files_egl += files('drivers/dri2/platform_android.c')
   endif
+  if with_platform_minigui
+    deps_for_egl += dep_minigui
+    files_egl += files('drivers/dri2/platform_minigui.c')
+  endif
 elif with_platform_haiku
   incs_for_egl += inc_haikugl
   c_args_for_egl += [
