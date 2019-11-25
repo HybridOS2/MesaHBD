@@ -53,8 +53,65 @@
 #ifdef HAVE_LIBDRM
 #include <drm/drm_fourcc.h>
 #else
-// TODO define format without fourcc file.
-#endif
+/* define format without fourcc file.
+ * We copied the definitions from drm_fourcc.h
+ */
+#define fourcc_code(a, b, c, d) ((__u32)(a) | ((__u32)(b) << 8) | \
+                ((__u32)(c) << 16) | ((__u32)(d) << 24))
+
+/* 16 bpp RGB */
+#define DRM_FORMAT_XRGB4444    fourcc_code('X', 'R', '1', '2') /* [15:0] x:R:G:B 4:4:4:4 little endian */
+#define DRM_FORMAT_XBGR4444    fourcc_code('X', 'B', '1', '2') /* [15:0] x:B:G:R 4:4:4:4 little endian */
+#define DRM_FORMAT_RGBX4444    fourcc_code('R', 'X', '1', '2') /* [15:0] R:G:B:x 4:4:4:4 little endian */
+#define DRM_FORMAT_BGRX4444    fourcc_code('B', 'X', '1', '2') /* [15:0] B:G:R:x 4:4:4:4 little endian */
+
+#define DRM_FORMAT_ARGB4444    fourcc_code('A', 'R', '1', '2') /* [15:0] A:R:G:B 4:4:4:4 little endian */
+#define DRM_FORMAT_ABGR4444    fourcc_code('A', 'B', '1', '2') /* [15:0] A:B:G:R 4:4:4:4 little endian */
+#define DRM_FORMAT_RGBA4444    fourcc_code('R', 'A', '1', '2') /* [15:0] R:G:B:A 4:4:4:4 little endian */
+#define DRM_FORMAT_BGRA4444    fourcc_code('B', 'A', '1', '2') /* [15:0] B:G:R:A 4:4:4:4 little endian */
+
+#define DRM_FORMAT_XRGB1555    fourcc_code('X', 'R', '1', '5') /* [15:0] x:R:G:B 1:5:5:5 little endian */
+#define DRM_FORMAT_XBGR1555    fourcc_code('X', 'B', '1', '5') /* [15:0] x:B:G:R 1:5:5:5 little endian */
+#define DRM_FORMAT_RGBX5551    fourcc_code('R', 'X', '1', '5') /* [15:0] R:G:B:x 5:5:5:1 little endian */
+#define DRM_FORMAT_BGRX5551    fourcc_code('B', 'X', '1', '5') /* [15:0] B:G:R:x 5:5:5:1 little endian */
+
+#define DRM_FORMAT_ARGB1555    fourcc_code('A', 'R', '1', '5') /* [15:0] A:R:G:B 1:5:5:5 little endian */
+#define DRM_FORMAT_ABGR1555    fourcc_code('A', 'B', '1', '5') /* [15:0] A:B:G:R 1:5:5:5 little endian */
+#define DRM_FORMAT_RGBA5551    fourcc_code('R', 'A', '1', '5') /* [15:0] R:G:B:A 5:5:5:1 little endian */
+#define DRM_FORMAT_BGRA5551    fourcc_code('B', 'A', '1', '5') /* [15:0] B:G:R:A 5:5:5:1 little endian */
+
+#define DRM_FORMAT_RGB565    fourcc_code('R', 'G', '1', '6') /* [15:0] R:G:B 5:6:5 little endian */
+#define DRM_FORMAT_BGR565    fourcc_code('B', 'G', '1', '6') /* [15:0] B:G:R 5:6:5 little endian */
+
+/* 24 bpp RGB */
+#define DRM_FORMAT_RGB888    fourcc_code('R', 'G', '2', '4') /* [23:0] R:G:B little endian */
+#define DRM_FORMAT_BGR888    fourcc_code('B', 'G', '2', '4') /* [23:0] B:G:R little endian */
+
+#define DRM_FORMAT_RGB888    fourcc_code('R', 'G', '2', '4') /* [23:0] R:G:B little endian */
+#define DRM_FORMAT_BGR888    fourcc_code('B', 'G', '2', '4') /* [23:0] B:G:R little endian */
+
+/* 32 bpp RGB */
+#define DRM_FORMAT_XRGB8888    fourcc_code('X', 'R', '2', '4') /* [31:0] x:R:G:B 8:8:8:8 little endian */
+#define DRM_FORMAT_XBGR8888    fourcc_code('X', 'B', '2', '4') /* [31:0] x:B:G:R 8:8:8:8 little endian */
+#define DRM_FORMAT_RGBX8888    fourcc_code('R', 'X', '2', '4') /* [31:0] R:G:B:x 8:8:8:8 little endian */
+#define DRM_FORMAT_BGRX8888    fourcc_code('B', 'X', '2', '4') /* [31:0] B:G:R:x 8:8:8:8 little endian */
+
+#define DRM_FORMAT_ARGB8888    fourcc_code('A', 'R', '2', '4') /* [31:0] A:R:G:B 8:8:8:8 little endian */
+#define DRM_FORMAT_ABGR8888    fourcc_code('A', 'B', '2', '4') /* [31:0] A:B:G:R 8:8:8:8 little endian */
+#define DRM_FORMAT_RGBA8888    fourcc_code('R', 'A', '2', '4') /* [31:0] R:G:B:A 8:8:8:8 little endian */
+#define DRM_FORMAT_BGRA8888    fourcc_code('B', 'A', '2', '4') /* [31:0] B:G:R:A 8:8:8:8 little endian */
+
+#define DRM_FORMAT_XRGB2101010    fourcc_code('X', 'R', '3', '0') /* [31:0] x:R:G:B 2:10:10:10 little endian */
+#define DRM_FORMAT_XBGR2101010    fourcc_code('X', 'B', '3', '0') /* [31:0] x:B:G:R 2:10:10:10 little endian */
+#define DRM_FORMAT_RGBX1010102    fourcc_code('R', 'X', '3', '0') /* [31:0] R:G:B:x 10:10:10:2 little endian */
+#define DRM_FORMAT_BGRX1010102    fourcc_code('B', 'X', '3', '0') /* [31:0] B:G:R:x 10:10:10:2 little endian */
+
+#define DRM_FORMAT_ARGB2101010    fourcc_code('A', 'R', '3', '0') /* [31:0] A:R:G:B 2:10:10:10 little endian */
+#define DRM_FORMAT_ABGR2101010    fourcc_code('A', 'B', '3', '0') /* [31:0] A:B:G:R 2:10:10:10 little endian */
+#define DRM_FORMAT_RGBA1010102    fourcc_code('R', 'A', '3', '0') /* [31:0] R:G:B:A 10:10:10:2 little endian */
+#define DRM_FORMAT_BGRA1010102    fourcc_code('B', 'A', '3', '0') /* [31:0] B:G:R:A 10:10:10:2 little endian */
+
+#endif /* HAVE_LIBDRM */
 
 /*
  * The index of entries in this table is used as a bitmask in
@@ -1261,6 +1318,9 @@ dri2_initialize_minigui_swrast(_EGLDriver *drv, _EGLDisplay *disp)
 
    disp->Device = dev;
 
+   if (!BITSET_TEST_RANGE(dri2_dpy->mg_formats, 0, EGL_DRI2_MAX_FORMATS))
+      goto cleanup;
+
    /*
     * Every hardware driver_name is set using strdup. Doing the same in
     * here will allow is to simply free the memory at dri2_terminate().
@@ -1455,3 +1515,4 @@ dri2_teardown_minigui(struct dri2_egl_display *dri2_dpy)
       u_vector_finish(&dri2_dpy->mg_modifiers[i]);
    free(dri2_dpy->mg_modifiers);
 }
+
