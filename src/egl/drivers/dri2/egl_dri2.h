@@ -351,7 +351,7 @@ struct dri2_egl_surface
 
 #ifdef HAVE_MINIGUI_PLATFORM
    HWND        mg_win;
-   HDC         mg_drawable;
+   HDC         mg_pixmap;
    HDC         mg_swap_drawable;
    __DRIimage *mg_dri_image_front;
    __DRIimage *mg_dri_image_back;
@@ -364,13 +364,10 @@ struct dri2_egl_surface
       /* for is_different_gpu case. NULL else */
       __DRIimage       *linear_copy;
       /* for swrast */
-      void *data;
-      int data_size;
-#ifdef HAVE_LIBDRM
-      uint32_t           bo_handle;
-#endif
-      bool               locked;
-      int                age;
+      void             *data;
+      int               data_size;
+      bool              locked;
+      int               age;
    } mg_color_buffers[4], *mg_back, *mg_current;
 #endif
 

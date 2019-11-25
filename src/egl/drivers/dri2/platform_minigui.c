@@ -230,6 +230,36 @@ dri2_minigui_visual_idx_from_dri_image_format(uint32_t dri_image_format)
    return -1;
 }
 
+static uint32_t
+dri2_minigui_format_from_masks(unsigned int rmask,
+        unsigned int gmask, unsigned int bmask, unsigned int amask)
+{
+   for (int i = 0; i < ARRAY_SIZE(dri2_mg_visuals); i++) {
+      if (dri2_mg_visuals[i].rgba_masks[0] == rmask &&
+            dri2_mg_visuals[i].rgba_masks[1] == gmask &&
+            dri2_mg_visuals[i].rgba_masks[2] == bmask &&
+            dri2_mg_visuals[i].rgba_masks[3] == amask)
+         return dri2_mg_visuals[i].drm_format;
+   }
+
+   return 0;
+}
+
+static uint32_t
+dri2_minigui_image_format_from_masks(unsigned int rmask,
+        unsigned int gmask, unsigned int bmask, unsigned int amask)
+{
+   for (int i = 0; i < ARRAY_SIZE(dri2_mg_visuals); i++) {
+      if (dri2_mg_visuals[i].rgba_masks[0] == rmask &&
+            dri2_mg_visuals[i].rgba_masks[1] == gmask &&
+            dri2_mg_visuals[i].rgba_masks[2] == bmask &&
+            dri2_mg_visuals[i].rgba_masks[3] == amask)
+         return dri2_mg_visuals[i].dri_image_format;
+   }
+
+   return 0;
+}
+
 #if 0 // VW
 static int
 dri2_minigui_visual_idx_from_shm_format(uint32_t shm_format)
@@ -260,36 +290,6 @@ dri2_minigui_is_format_supported(void* user_data, uint32_t format)
    return false;
 }
 #endif
-
-/* Get red channel mask for given depth. */
-static unsigned int
-dri2_minigui_get_red_mask_for_depth(struct dri2_egl_display *dri2_dpy, int depth)
-{
-   /* VW: TODO */
-   return 0;
-}
-
-static uint32_t
-dri2_format_for_depth(struct dri2_egl_display *dri2_dpy, uint32_t depth)
-{
-   switch (depth) {
-   case 16:
-      return __DRI_IMAGE_FORMAT_RGB565;
-   case 24:
-      return __DRI_IMAGE_FORMAT_XRGB8888;
-   case 30:
-      /* Different preferred formats for different hw */
-      if (dri2_minigui_get_red_mask_for_depth(dri2_dpy, 30) == 0x3ff)
-         return __DRI_IMAGE_FORMAT_XBGR2101010;
-      else
-         return __DRI_IMAGE_FORMAT_XRGB2101010;
-   case 32:
-      return __DRI_IMAGE_FORMAT_ARGB8888;
-   default:
-      return __DRI_IMAGE_FORMAT_NONE;
-   }
-}
-
 
 static void
 swrastCreateDrawable(struct dri2_egl_display * dri2_dpy,
@@ -718,6 +718,8 @@ dri2_minigui_create_pixmap_surface(_EGLDriver *drv, _EGLDisplay *disp,
                           false, native_pixmap))
       goto cleanup_surf;
 
+   dri2_surf->mg_pixmap = (HDC)native_pixmap;
+
    config = dri2_get_dri_config(dri2_conf, EGL_PIXMAP_BIT,
                                 dri2_surf->base.GLColorspace);
 
@@ -729,7 +731,24 @@ dri2_minigui_create_pixmap_surface(_EGLDriver *drv, _EGLDisplay *disp,
    if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf))
       goto cleanup_pixmap;
 
-   // VW: TODO
+   dri2_surf->base.Width = GetGDCapability((HDC)native_pixmap, GDCAP_HPIXEL);
+   dri2_surf->base.Height = GetGDCapability((HDC)native_pixmap, GDCAP_VPIXEL);
+   dri2_surf->mg_format = dri2_minigui_format_from_masks (
+                GetGDCapability((HDC)native_pixmap, GDCAP_RMASK),
+                GetGDCapability((HDC)native_pixmap, GDCAP_GMASK),
+                GetGDCapability((HDC)native_pixmap, GDCAP_BMASK),
+                GetGDCapability((HDC)native_pixmap, GDCAP_AMASK));
+   if (dri2_surf->mg_format == 0) {
+      _eglError(EGL_BAD_MATCH, "Unsupported surfacetype/colorspace configuration");
+      goto cleanup_dri_drawable;
+   }
+
+   if (dri2_dpy->dri2) {
+      // get and bind to the direct buffer object.
+   }
+   else {
+      swrastCreateDrawable(dri2_dpy, dri2_surf);
+   }
 
    return &dri2_surf->base;
 
@@ -1269,6 +1288,65 @@ dri2_minigui_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
    return EGL_TRUE;
 }
 
+static _EGLImage *
+dri2_create_image_khr_pixmap(_EGLDisplay *disp, _EGLContext *ctx,
+              EGLClientBuffer buffer, const EGLint *attr_list)
+{
+#ifndef _MGGAL_DRM
+   _eglError(EGL_BAD_PARAMETER,
+            "dri2_create_image_khr_pixmap: not supported");
+   return NULL;
+#else
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   struct dri2_egl_image *dri2_img;
+   HDC pixmap;
+   DrmSurfaceInfo info;
+
+   (void) ctx;
+
+   if (!drmGetSurfaceInfo(dri2_dpy->mg_video, (HDC)buffer, &info)
+        || info.name == 0) {
+      _eglError(EGL_BAD_PARAMETER,
+            "dri2_create_image_khr: unsupported pixmap type (bad DRM surface)");
+      return NULL;
+   }
+
+   dri2_img = malloc(sizeof *dri2_img);
+   if (!dri2_img) {
+      _eglError(EGL_BAD_ALLOC, "dri2_create_image_khr");
+      return EGL_NO_IMAGE_KHR;
+   }
+
+   _eglInitImage(&dri2_img->base, disp);
+
+   dri2_img->dri_image =
+      dri2_dpy->image->createImageFromName(dri2_dpy->dri_screen,
+                  info.width,
+                  info.height,
+                  info.drm_format,
+                  info.name,
+                  info.pitch,
+                  dri2_img);
+
+   return &dri2_img->base;
+#endif
+}
+
+static _EGLImage *
+dri2_minigui_create_image_khr(_EGLDriver *drv, _EGLDisplay *disp,
+           _EGLContext *ctx, EGLenum target,
+           EGLClientBuffer buffer, const EGLint *attr_list)
+{
+   (void) drv;
+
+   switch (target) {
+   case EGL_NATIVE_PIXMAP_KHR:
+      return dri2_create_image_khr_pixmap(disp, ctx, buffer, attr_list);
+   default:
+      return dri2_create_image_khr(drv, disp, ctx, target, buffer, attr_list);
+   }
+}
+
 static const struct dri2_egl_display_vtbl dri2_minigui_swrast_display_vtbl = {
    .authenticate = NULL,
    .create_window_surface = dri2_minigui_create_window_surface,
@@ -1292,7 +1370,7 @@ static const struct dri2_egl_display_vtbl dri2_minigui_display_vtbl = {
    .create_pixmap_surface = dri2_minigui_create_pixmap_surface,
    .create_pbuffer_surface = dri2_fallback_create_pbuffer_surface,
    .destroy_surface = dri2_minigui_destroy_surface,
-   .create_image = dri2_create_image_khr,
+   .create_image = dri2_minigui_create_image_khr,
    .swap_buffers = dri2_minigui_swap_buffers,
    .swap_buffers_with_damage = dri2_fallback_swap_buffers_with_damage,
    .swap_buffers_region = dri2_fallback_swap_buffers_region,
@@ -1377,11 +1455,6 @@ dri2_initialize_minigui_swrast(_EGLDriver *drv, _EGLDisplay *disp)
 static void
 dri2_minigui_setup_swap_interval(_EGLDisplay *disp)
 {
-   /* We can't use values greater than 1 on Wayland because we are using the
-    * frame callback to synchronise the frame and the only way we be sure to
-    * get a frame callback is to attach a new buffer. Therefore we can't just
-    * sit drawing nothing to wait until the next ‘n’ frame callbacks */
-
    dri2_setup_swap_interval(disp, 1);
 }
 
