@@ -895,6 +895,8 @@ foreach a : ['-Werror=implicit-function-declaration',
   endif
 endforeach
 
+c_args += '-fmax-errors=10'
+
 c_vis_args = []
 if cc.has_argument('-fvisibility=hidden')
   c_vis_args += '-fvisibility=hidden'

@@ -726,6 +726,11 @@ EGLAPI EGLBoolean EGLAPIENTRY eglQueryDisplayAttribEXT (EGLDisplay dpy, EGLint a
 #define EGL_GL_COLORSPACE_DISPLAY_P3_PASSTHROUGH_EXT 0x3490
 #endif /* EGL_EXT_gl_colorspace_display_p3_passthrough */
 
+#ifndef EGL_EXT_platform_minigui
+#define EGL_EXT_platform_minigui 1
+#define EGL_PLATFORM_MINIGUI_EXT 0x34A0
+#endif /* EGL_EXT_platform_minigui */
+
 #ifndef EGL_EXT_gl_colorspace_scrgb
 #define EGL_EXT_gl_colorspace_scrgb 1
 #define EGL_GL_COLORSPACE_SCRGB_EXT       0x3351

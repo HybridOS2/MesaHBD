@@ -51,6 +51,7 @@ enum _egl_platform_type {
    _EGL_PLATFORM_HAIKU,
    _EGL_PLATFORM_SURFACELESS,
    _EGL_PLATFORM_DEVICE,
+   _EGL_PLATFORM_MINIGUI,
 
    _EGL_NUM_PLATFORMS,
    _EGL_INVALID_PLATFORM = -1
@@ -324,6 +325,12 @@ _eglGetAndroidDisplay(void *native_display,
 _EGLDisplay*
 _eglGetDeviceDisplay(void *native_display,
                      const EGLAttrib *attrib_list);
+
+#ifdef HAVE_MINIGUI_PLATFORM
+_EGLDisplay*
+_eglGetMiniGUIDisplay(void *native_display,
+                         const EGLAttrib *attrib_list);
+#endif
 
 #ifdef __cplusplus
 }

@@ -414,6 +414,11 @@ _eglGetPlatformDisplayCommon(EGLenum platform, void *native_display,
    case EGL_PLATFORM_DEVICE_EXT:
       disp = _eglGetDeviceDisplay(native_display, attrib_list);
       break;
+#ifdef HAVE_MINIGUI_PLATFORM
+   case EGL_PLATFORM_MINIGUI_EXT:
+      disp = _eglGetMiniGUIDisplay(native_display, attrib_list);
+      break;
+#endif
    default:
       RETURN_EGL_ERROR(NULL, EGL_BAD_PARAMETER, NULL);
    }

@@ -75,6 +75,7 @@ static const struct {
    { _EGL_PLATFORM_HAIKU, "haiku" },
    { _EGL_PLATFORM_SURFACELESS, "surfaceless" },
    { _EGL_PLATFORM_DEVICE, "device" },
+   { _EGL_PLATFORM_MINIGUI, "minigui" },
 };
 
 
@@ -122,6 +123,12 @@ _eglNativePlatformDetectNativeDisplay(void *nativeDisplay)
       void *first_pointer = *(void **) nativeDisplay;
 
       (void) first_pointer; /* silence unused var warning */
+
+#ifdef HAVE_MINIGUI_PLATFORM
+      /* VW: check first pointer  */
+      //if (first_pointer == &wl_display_interface)
+         return _EGL_PLATFORM_WAYLAND;
+#endif
 
 #ifdef HAVE_WAYLAND_PLATFORM
       /* wl_display is a wl_proxy, which is a wl_object.

@@ -69,6 +69,13 @@ struct zwp_linux_dmabuf_v1;
 #include <hardware/gralloc.h>
 #endif /* HAVE_ANDROID_PLATFORM */
 
+#ifdef HAVE_MINIGUI_PLATFORM
+#include <minigui/common.h>
+#include <minigui/minigui.h>
+#include <minigui/gdi.h>
+#include <minigui/window.h>
+#endif /* HAVE_MINIGUI_PLATFORM */
+
 #include "eglconfig.h"
 #include "eglcontext.h"
 #include "egldevice.h"
@@ -241,6 +248,12 @@ struct dri2_egl_display
    const gralloc_module_t *gralloc;
 #endif
 
+#ifdef HAVE_MINIGUI_PLATFORM
+   GHANDLE                   mg_video;
+   struct u_vector          *mg_modifiers;
+   BITSET_DECLARE(mg_formats, EGL_DRI2_MAX_FORMATS);
+#endif
+
    bool                      is_render_node;
    bool                      is_different_gpu;
 };
@@ -335,6 +348,31 @@ struct dri2_egl_surface
    /* surfaceless and device */
    __DRIimage           *front;
    unsigned int         visual;
+
+#ifdef HAVE_MINIGUI_PLATFORM
+   HWND        mg_win;
+   HDC         mg_drawable;
+   HDC         mg_swap_drawable;
+   __DRIimage *mg_dri_image_front;
+   __DRIimage *mg_dri_image_back;
+   int         mg_format;
+
+   struct {
+      HDC               mg_buffer;
+      bool              mg_release;
+      __DRIimage       *dri_image;
+      /* for is_different_gpu case. NULL else */
+      __DRIimage       *linear_copy;
+      /* for swrast */
+      void *data;
+      int data_size;
+#ifdef HAVE_LIBDRM
+      uint32_t           bo_handle;
+#endif
+      bool               locked;
+      int                age;
+   } mg_color_buffers[4], *mg_back, *mg_current;
+#endif
 
    int out_fence_fd;
    EGLBoolean enable_out_fence;
@@ -492,6 +530,21 @@ dri2_initialize_surfaceless(_EGLDriver *drv, _EGLDisplay *disp)
 {
    return _eglError(EGL_NOT_INITIALIZED, "Surfaceless platform not built");
 }
+#endif
+
+#ifdef HAVE_MINIGUI_PLATFORM
+EGLBoolean
+dri2_initialize_minigui(_EGLDriver *drv, _EGLDisplay *disp);
+void
+dri2_teardown_minigui(struct dri2_egl_display *dri2_dpy);
+#else
+static inline EGLBoolean
+dri2_initialize_minigui(_EGLDriver *drv, _EGLDisplay *disp)
+{
+   return _eglError(EGL_NOT_INITIALIZED, "MiniGUI platform not built");
+}
+static inline void
+dri2_teardown_minigui(struct dri2_egl_display *dri2_dpy) {}
 #endif
 
 EGLBoolean
