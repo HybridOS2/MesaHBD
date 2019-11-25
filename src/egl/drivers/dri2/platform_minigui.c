@@ -53,7 +53,8 @@
 #ifdef HAVE_LIBDRM
 #include <drm/drm_fourcc.h>
 #else
-/* define format without fourcc file.
+/*
+ * Define the formats if no fourcc file.
  * We copied the definitions from drm_fourcc.h
  */
 #define fourcc_code(a, b, c, d) ((__u32)(a) | ((__u32)(b) << 8) | \
@@ -1108,6 +1109,25 @@ dri2_minigui_get_buffers(__DRIdrawable * driDrawable,
    return buffer;
 }
 
+static int
+image_get_buffers(__DRIdrawable *driDrawable,
+                  unsigned int format,
+                  uint32_t *stamp,
+                  void *loaderPrivate,
+                  uint32_t buffer_mask,
+                  struct __DRIimageList *buffers)
+{
+   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+
+   if (update_buffers(dri2_surf) < 0)
+      return 0;
+
+   buffers->image_mask = __DRI_IMAGE_BUFFER_BACK;
+   buffers->back = dri2_surf->mg_back->dri_image;
+
+   return 1;
+}
+
 static void
 dri2_minigui_flush_front_buffer(__DRIdrawable * driDrawable, void *loaderPrivate)
 {
@@ -1396,6 +1416,20 @@ static const __DRIextension *dri2_loader_extensions[] = {
    NULL,
 };
 
+static const __DRIimageLoaderExtension image_loader_extension = {
+   .base = { __DRI_IMAGE_LOADER, 1 },
+
+   .getBuffers          = image_get_buffers,
+   .flushFrontBuffer    = dri2_minigui_flush_front_buffer,
+};
+
+static const __DRIextension *image_loader_extensions[] = {
+   &image_loader_extension.base,
+   &image_lookup_extension.base,
+   &use_invalidate.base,
+   NULL,
+};
+
 static EGLBoolean
 dri2_initialize_minigui_dri2(_EGLDriver *drv, _EGLDisplay *disp)
 {
@@ -1405,6 +1439,14 @@ dri2_initialize_minigui_dri2(_EGLDriver *drv, _EGLDisplay *disp)
    dri2_dpy = calloc(1, sizeof *dri2_dpy);
    if (!dri2_dpy)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
+
+   if (disp->PlatformDisplay == NULL) {
+      dri2_dpy->mg_video = GetVideoHandle(HDC_SCREEN);
+      if (dri2_dpy->mg_video == NULL)
+         goto cleanup;
+   } else {
+      dri2_dpy->mg_video = disp->PlatformDisplay;
+   }
 
    dri2_dpy->fd = -1;
 #ifdef _MGGAL_DRM
@@ -1449,20 +1491,77 @@ dri2_initialize_minigui_dri2(_EGLDriver *drv, _EGLDisplay *disp)
          goto cleanup;
    }
 
+   dri2_dpy->fd = loader_get_user_preferred_fd(dri2_dpy->fd,
+                                               &dri2_dpy->is_different_gpu);
+   dev = _eglAddDevice(dri2_dpy->fd, false);
+   if (!dev) {
+      _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to find EGLDevice");
+      goto cleanup;
+   }
+
+   disp->Device = dev;
+
+#if 0 // VW
+   if (dri2_dpy->is_different_gpu) {
+      free(dri2_dpy->device_name);
+      dri2_dpy->device_name = loader_get_device_name_for_fd(dri2_dpy->fd);
+      if (!dri2_dpy->device_name) {
+         _eglError(EGL_BAD_ALLOC, "minigui-egl: failed to get device name "
+                                  "for requested GPU");
+         goto cleanup;
+      }
+   }
+#endif
+
+   /* we have to do the check now, because loader_get_user_preferred_fd
+    * will return a render-node when the requested gpu is different
+    * to the server, but also if the client asks for the same gpu than
+    * the server by requesting its pci-id */
+   dri2_dpy->is_render_node = drmGetNodeTypeFromFd(dri2_dpy->fd) == DRM_NODE_RENDER;
+
+   dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd);
+   if (dri2_dpy->driver_name == NULL) {
+      _eglError(EGL_BAD_ALLOC, "DRI2: failed to get driver name");
+      goto cleanup;
+   }
+
+   /* render nodes cannot use Gem names, and thus do not support
+    * the __DRI_DRI2_LOADER extension */
+   if (!dri2_dpy->is_render_node) {
+      dri2_dpy->loader_extensions = dri2_loader_extensions;
+      if (!dri2_load_driver(disp)) {
+         _eglError(EGL_BAD_ALLOC, "DRI2: failed to load driver");
+         goto cleanup;
+      }
+   } else {
+      dri2_dpy->loader_extensions = image_loader_extensions;
+      if (!dri2_load_driver_dri3(disp)) {
+         _eglError(EGL_BAD_ALLOC, "DRI3: failed to load driver");
+         goto cleanup;
+      }
+   }
+
    dri2_setup_screen(disp);
 
    dri2_minigui_setup_swap_interval(disp);
 
-   disp->Extensions.KHR_image_pixmap = EGL_TRUE;
-   disp->Extensions.NOK_swap_region = EGL_TRUE;
-   disp->Extensions.NOK_texture_from_pixmap = EGL_TRUE;
-   disp->Extensions.NV_post_sub_buffer = EGL_TRUE;
-   disp->Extensions.CHROMIUM_sync_control = EGL_TRUE;
-
-   dri2_set_WL_bind_wayland_display(drv, disp);
-
-   if (!dri2_minigui_add_configs_for_visuals(drv, disp))
+   if (dri2_dpy->is_different_gpu &&
+       (dri2_dpy->image->base.version < 9 ||
+        dri2_dpy->image->blitImage == NULL)) {
+      _eglLog(_EGL_WARNING, "minigui-egl: Different GPU selected, but the "
+                            "Image extension in the driver is not "
+                            "compatible. Version 9 or later and blitImage() "
+                            "are required");
       goto cleanup;
+   }
+
+   if (!dri2_minigui_add_configs_for_visuals(drv, disp)) {
+      _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to add configs");
+      goto cleanup;
+   }
+
+   disp->Extensions.EXT_buffer_age = EGL_TRUE;
+   disp->Extensions.EXT_swap_buffers_with_damage = EGL_TRUE;
 
    /* Fill vtbl last to prevent accidentally calling virtual function during
     * initialization.
