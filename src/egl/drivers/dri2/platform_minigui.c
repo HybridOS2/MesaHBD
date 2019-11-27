@@ -46,6 +46,8 @@
 #include "util/u_vector.h"
 #include "util/anon_file.h"
 
+#define _DEBUG
+
 #include "egl_dri2.h"
 #include "egl_dri2_fallbacks.h"
 #include "loader.h"
@@ -652,6 +654,17 @@ dri2_minigui_swrast_put_image(__DRIdrawable * draw, int op,
                              stride, data, loaderPrivate);
 }
 
+static EGLBoolean
+dri2_minigui_swrast_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp,
+        _EGLSurface *surf)
+{
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
+
+   dri2_dpy->core->swapBuffers(dri2_surf->dri_drawable);
+   return EGL_TRUE;
+}
+
 static void
 window_resized_callback (HWND hwnd, struct dri2_egl_surface *dri2_surf,
         const RECT* rc_client)
@@ -670,7 +683,9 @@ window_resized_callback (HWND hwnd, struct dri2_egl_surface *dri2_surf,
       dri2_surf->base.Width = RECTWP(rc_client);
       dri2_surf->base.Height = RECTHP(rc_client);
    }
-   dri2_dpy->flush->invalidate(dri2_surf->dri_drawable);
+
+   if (dri2_dpy->flush)
+      dri2_dpy->flush->invalidate(dri2_surf->dri_drawable);
 }
 
 static void
@@ -758,8 +773,10 @@ dri2_minigui_create_window_surface(_EGLDriver *drv, _EGLDisplay *disp,
    if (dri2_dpy->flush)
       dri2_surf->mg_cb_resized = window_resized_callback;
 
-   if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf))
+   if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf)) {
+      _eglError(EGL_BAD_MATCH, "failed to create dri_drawable");
       goto cleanup_pixmap;
+   }
 
    dri2_surf->base.SwapInterval = dri2_dpy->default_swap_interval;
 
@@ -1054,6 +1071,7 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
                                                      num_modifiers,
                                                      NULL);
       } else {
+         _DBG_PRINTF("dri2_dpy->image: %p\n", dri2_dpy->image);
          dri2_surf->mg_back->dri_image =
             dri2_dpy->image->createImage(dri2_dpy->dri_screen,
                                          dri2_surf->base.Width,
@@ -1661,7 +1679,8 @@ dri2_minigui_swap_buffers_with_damage(_EGLDriver *drv,
 #endif
 
    dri2_flush_drawable_for_swapbuffers(disp, surf);
-   dri2_dpy->flush->invalidate(dri2_surf->dri_drawable);
+   if (dri2_dpy->flush)
+      dri2_dpy->flush->invalidate(dri2_surf->dri_drawable);
 
 #if 0 // VW
    wl_surface_commit(dri2_surf->wl_surface_wrapper);
@@ -1753,7 +1772,7 @@ static const struct dri2_egl_display_vtbl dri2_minigui_swrast_display_vtbl = {
    .create_pbuffer_surface = dri2_minigui_create_pbuffer_surface,
    .destroy_surface = dri2_minigui_destroy_surface,
    .create_image = dri2_create_image_khr,
-   .swap_buffers = dri2_minigui_swap_buffers,
+   .swap_buffers = dri2_minigui_swrast_swap_buffers,
    .swap_buffers_region = dri2_fallback_swap_buffers_region,
    .post_sub_buffer = dri2_fallback_post_sub_buffer,
    .copy_buffers = dri2_fallback_copy_buffers,
@@ -1806,17 +1825,31 @@ dri2_initialize_minigui_swrast(_EGLDriver *drv, _EGLDisplay *disp)
    if (!dri2_dpy)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
 
+   disp->DriverData = (void *)dri2_dpy;
+
+   _DBG_PRINTF("dri2_egl_display allocated\n");
+
    dri2_dpy->fd = -1;
    dev = _eglAddDevice(dri2_dpy->fd, true);
    if (!dev) {
+      _DBG_PRINTF("_eglAddDevice failed\n");
       _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to find EGLDevice");
       goto cleanup;
    }
 
    disp->Device = dev;
 
-   if (!BITSET_TEST_RANGE(dri2_dpy->mg_formats, 0, EGL_DRI2_MAX_FORMATS))
+   // VW: only ARGB8888, XRGB8888, and RGB565 supported
+   BITSET_SET(dri2_dpy->mg_formats, 4);
+   BITSET_SET(dri2_dpy->mg_formats, 5);
+   BITSET_SET(dri2_dpy->mg_formats, 6);
+
+#if 0
+   if (!BITSET_TEST_RANGE(dri2_dpy->mg_formats, 0, EGL_DRI2_MAX_FORMATS)) {
+      _DBG_PRINTF("BITSET_TEST_RANGE failed\n");
       goto cleanup;
+   }
+#endif
 
    /*
     * Every hardware driver_name is set using strdup. Doing the same in
@@ -1838,6 +1871,15 @@ dri2_initialize_minigui_swrast(_EGLDriver *drv, _EGLDisplay *disp)
 
    if (!dri2_minigui_add_configs_for_visuals(drv, disp))
       goto cleanup;
+
+   dri2_dpy->mg_modifiers =
+      calloc(ARRAY_SIZE(dri2_mg_visuals), sizeof(*dri2_dpy->mg_modifiers));
+   if (!dri2_dpy->mg_modifiers)
+      goto cleanup;
+   for (int i = 0; i < ARRAY_SIZE(dri2_mg_visuals); i++) {
+      if (!u_vector_init(&dri2_dpy->mg_modifiers[i], sizeof(uint64_t), 32))
+         goto cleanup;
+   }
 
    /* Fill vtbl last to prevent accidentally calling virtual function during
     * initialization.
@@ -1911,6 +1953,8 @@ dri2_initialize_minigui_dri2(_EGLDriver *drv, _EGLDisplay *disp)
    dri2_dpy = calloc(1, sizeof *dri2_dpy);
    if (!dri2_dpy)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
+
+   disp->DriverData = (void *)dri2_dpy;
 
    if (disp->PlatformDisplay == NULL) {
       dri2_dpy->mg_video = GetVideoHandle(HDC_SCREEN);
@@ -2069,21 +2113,6 @@ dri2_initialize_minigui(_EGLDriver *drv, _EGLDisplay *disp)
 void
 dri2_teardown_minigui(struct dri2_egl_display *dri2_dpy)
 {
-#if 0 // VW
-   if (dri2_dpy->mg_drm)
-      mg_drm_destroy(dri2_dpy->mg_drm);
-   if (dri2_dpy->mg_dmabuf)
-      zwp_linux_dmabuf_v1_destroy(dri2_dpy->mg_dmabuf);
-   if (dri2_dpy->mg_shm)
-      mg_shm_destroy(dri2_dpy->mg_shm);
-   if (dri2_dpy->mg_registry)
-      mg_registry_destroy(dri2_dpy->mg_registry);
-   if (dri2_dpy->mg_queue)
-      mg_event_queue_destroy(dri2_dpy->mg_queue);
-   if (dri2_dpy->mg_dpy_wrapper)
-      mg_proxy_wrapper_destroy(dri2_dpy->mg_dpy_wrapper);
-#endif
-
    for (int i = 0; dri2_dpy->mg_modifiers && i < ARRAY_SIZE(dri2_mg_visuals); i++)
       u_vector_finish(&dri2_dpy->mg_modifiers[i]);
    free(dri2_dpy->mg_modifiers);

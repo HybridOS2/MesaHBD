@@ -124,7 +124,7 @@ if dri_drivers.contains('auto')
   if system_has_kms_drm
     # TODO: PPC, Sparc
     if ['x86', 'x86_64'].contains(host_machine.cpu_family())
-      dri_drivers = ['i915', 'i965', 'r100', 'r200', 'nouveau']
+      dri_drivers = ['i915', 'i965', 'r100', 'r200', 'nouveau', 'swrast']
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
       dri_drivers = []
     else
@@ -256,7 +256,7 @@ prog_pkgconfig = find_program('pkg-config')
 
 dep_minigui = dependency('minigui', version : '>= 4.1.0', required : false)
 if dep_minigui.found()
-  dep_minigui = declare_dependency(
+  dep_minigui_headers = declare_dependency(
     compile_args : run_command(prog_pkgconfig, ['minigui', '--cflags']).stdout().split()
   )
   have_minigui = true

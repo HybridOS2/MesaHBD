@@ -183,7 +183,7 @@ libegl = shared_library(
 # should be safe here
 if not with_glvnd or not glvnd_has_headers_and_pc_files
   if not glvnd_has_headers_and_pc_files
-    _egl = '-L${libdir} -lEGL'
+    _egl = '-L${libdir} -lEGL' + get_option('egl-lib-suffix')
   else
     _egl = libegl
   endif

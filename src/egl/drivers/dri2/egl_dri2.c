@@ -916,6 +916,9 @@ dri2_initialize(_EGLDriver *drv, _EGLDisplay *disp)
    case _EGL_PLATFORM_ANDROID:
       ret = dri2_initialize_android(drv, disp);
       break;
+   case _EGL_PLATFORM_MINIGUI:
+      ret = dri2_initialize_minigui(drv, disp);
+      break;
    default:
       unreachable("Callers ensure we cannot get here.");
       return EGL_FALSE;
@@ -982,6 +985,9 @@ dri2_display_destroy(_EGLDisplay *disp)
       break;
    case _EGL_PLATFORM_WAYLAND:
       dri2_teardown_wayland(dri2_dpy);
+      break;
+   case _EGL_PLATFORM_MINIGUI:
+      dri2_teardown_minigui(dri2_dpy);
       break;
    default:
       /* TODO: add teardown for other platforms */
