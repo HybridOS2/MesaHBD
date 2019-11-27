@@ -166,6 +166,11 @@ struct dri2_egl_display_vtbl {
                                   bool mode);
 };
 
+#ifdef HAVE_MINIGUI_PLATFORM
+#define MG_DRM_CAPABILITY_NAME      0x01
+#define MG_DRM_CAPABILITY_PRIME     0x02
+#endif
+
 struct dri2_egl_display
 {
    const struct dri2_egl_display_vtbl *vtbl;
@@ -252,6 +257,7 @@ struct dri2_egl_display
    GHANDLE                   mg_video;
    struct u_vector          *mg_modifiers;
    BITSET_DECLARE(mg_formats, EGL_DRI2_MAX_FORMATS);
+   uint32_t                  mg_capabilities;
 #endif
 
    bool                      is_render_node;
@@ -271,6 +277,13 @@ enum wayland_buffer_type {
    WL_BUFFER_THIRD,
    WL_BUFFER_COUNT
 };
+#endif
+
+#ifdef HAVE_MINIGUI_PLATFORM
+struct dri2_egl_surface;
+
+typedef void (*CB_RESIZED)(HWND, struct dri2_egl_surface* surf, const RECT* rc_client);
+typedef void (*CB_DESTROY)(HWND, struct dri2_egl_surface* surf);
 #endif
 
 struct dri2_egl_surface
@@ -351,8 +364,14 @@ struct dri2_egl_surface
 
 #ifdef HAVE_MINIGUI_PLATFORM
    HWND        mg_win;
+   WNDPROC     mg_old_proc;
+   CB_RESIZED  mg_cb_resized;
+   CB_DESTROY  mg_cb_destroy;
+   HDC         mg_priv_cdc;
+
    HDC         mg_pixmap;
    HDC         mg_swap_drawable;
+
    __DRIimage *mg_dri_image_front;
    __DRIimage *mg_dri_image_back;
    int         mg_format;

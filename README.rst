@@ -29,7 +29,7 @@ VW: Use the following commands to configure:
 
   $ mkdir build
   $ cd build
-  $ meson .. -Dgallium-drivers= -Dvulkan-drivers= -Dllvm=false
+  $ meson .. -Dgallium-drivers= -Dvulkan-drivers= -Dllvm=false -Degl-lib-suffix=hos -Dgles-lib-suffix=hos
   $ sudo ninja install
 
 Support
