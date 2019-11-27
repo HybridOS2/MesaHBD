@@ -1071,7 +1071,6 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
                                                      num_modifiers,
                                                      NULL);
       } else {
-         _DBG_PRINTF("dri2_dpy->image: %p\n", dri2_dpy->image);
          dri2_surf->mg_back->dri_image =
             dri2_dpy->image->createImage(dri2_dpy->dri_screen,
                                          dri2_surf->base.Width,
@@ -1827,12 +1826,9 @@ dri2_initialize_minigui_swrast(_EGLDriver *drv, _EGLDisplay *disp)
 
    disp->DriverData = (void *)dri2_dpy;
 
-   _DBG_PRINTF("dri2_egl_display allocated\n");
-
    dri2_dpy->fd = -1;
    dev = _eglAddDevice(dri2_dpy->fd, true);
    if (!dev) {
-      _DBG_PRINTF("_eglAddDevice failed\n");
       _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to find EGLDevice");
       goto cleanup;
    }
