@@ -124,13 +124,6 @@ static const struct dri2_minigui_visual {
    const char *format_name;
    uint32_t drm_format;
    int dri_image_format;
-   /* alt_dri_image_format is a substitute mg_buffer format to use for a
-    * wl-server unsupported dri_image_format, ie. some other dri_image_format in
-    * the table, of the same precision but with different channel ordering, or
-    * __DRI_IMAGE_FORMAT_NONE if an alternate format is not needed or supported.
-    * The code checks if alt_dri_image_format can be used as a fallback for a
-    * dri_image_format for a given wl-server implementation.
-    */
    int alt_dri_image_format;
    int bpp;
    unsigned int rgba_masks[4];
@@ -306,9 +299,30 @@ dri2_minigui_swrast_get_stride_for_format(int format, int w, int* visual_idx)
    return w * (dri2_mg_visuals[my_visual_idx].bpp / 8);
 }
 
-static inline void mg_buffer_destroy(HDC dc)
+static inline void
+dri2_minigui_destroy_memdc(HDC dc)
 {
     DeleteMemDC(dc);
+}
+
+static void
+dri2_minigui_release_buffer(struct dri2_egl_surface *dri2_surf, HDC *memdc)
+{
+   int i;
+
+   for (i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); ++i)
+      if (dri2_surf->mg_color_buffers[i].memdc == memdc)
+         break;
+
+   assert (i < ARRAY_SIZE(dri2_surf->mg_color_buffers));
+
+   if (dri2_surf->mg_color_buffers[i].release) {
+      dri2_surf->mg_color_buffers[i].release = false;
+      //dri2_minigui_destroy_memdc(memdc);
+      //dri2_surf->mg_color_buffers[i].memdc = NULL;
+   }
+
+   dri2_surf->mg_color_buffers[i].locked = false;
 }
 
 static EGLBoolean
@@ -352,6 +366,9 @@ dri2_minigui_swrast_allocate_buffer(struct dri2_egl_surface *dri2_surf,
    *size = size_map;
    *dc = memdc;
 
+   _DBG_PRINTF("a software memdc created: w(%d), h(%d), stride(%d), visual(%d)\n",
+            w, h, stride, visual_idx);
+
    return EGL_TRUE;
 }
 
@@ -362,12 +379,12 @@ dri2_minigui_release_buffers(struct dri2_egl_surface *dri2_surf)
       dri2_egl_display(dri2_surf->base.Resource.Display);
 
    for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
-      if (dri2_surf->mg_color_buffers[i].mg_buffer) {
+      if (dri2_surf->mg_color_buffers[i].memdc) {
          if (dri2_surf->mg_color_buffers[i].locked) {
-            dri2_surf->mg_color_buffers[i].mg_release = true;
+            dri2_surf->mg_color_buffers[i].release = true;
          } else {
-            mg_buffer_destroy(dri2_surf->mg_color_buffers[i].mg_buffer);
-            dri2_surf->mg_color_buffers[i].mg_buffer = NULL;
+            dri2_minigui_destroy_memdc(dri2_surf->mg_color_buffers[i].memdc);
+            dri2_surf->mg_color_buffers[i].memdc = NULL;
          }
       }
       if (dri2_surf->mg_color_buffers[i].dri_image)
@@ -422,7 +439,7 @@ swrast_update_buffers(struct dri2_egl_surface *dri2_surf)
    /* try get free buffer already created */
    for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
       if (!dri2_surf->mg_color_buffers[i].locked &&
-          dri2_surf->mg_color_buffers[i].mg_buffer) {
+          dri2_surf->mg_color_buffers[i].memdc) {
           dri2_surf->mg_back = &dri2_surf->mg_color_buffers[i];
           break;
       }
@@ -439,13 +456,14 @@ swrast_update_buffers(struct dri2_egl_surface *dri2_surf)
                                                  dri2_surf->base.Height,
                                                  &dri2_surf->mg_back->data,
                                                  &dri2_surf->mg_back->data_size,
-                                                 &dri2_surf->mg_back->mg_buffer)) {
-                _eglError(EGL_BAD_ALLOC, "failed to allocate color buffer");
+                                                 &dri2_surf->mg_back->memdc)) {
+                 _DBG_PRINTF("failed to allocate color buffer\n");
+                 _eglError(EGL_BAD_ALLOC, "failed to allocate color buffer");
                  return -1;
              }
 #if 0 // VW
-             mg_buffer_add_listener(dri2_surf->mg_back->mg_buffer,
-                                    &mg_buffer_listener, dri2_surf);
+             memdc_add_listener(dri2_surf->mg_back->memdc,
+                                    &memdc_listener, dri2_surf);
 #endif
              break;
          }
@@ -453,6 +471,7 @@ swrast_update_buffers(struct dri2_egl_surface *dri2_surf)
    }
 
    if (!dri2_surf->mg_back) {
+      _DBG_PRINTF("failed to find free buffer\n");
       _eglError(EGL_BAD_ALLOC, "failed to find free buffer");
       return -1;
    }
@@ -464,11 +483,11 @@ swrast_update_buffers(struct dri2_egl_surface *dri2_surf)
     * That means we can free any unlocked buffer now. */
    for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
       if (!dri2_surf->mg_color_buffers[i].locked &&
-          dri2_surf->mg_color_buffers[i].mg_buffer) {
-         mg_buffer_destroy(dri2_surf->mg_color_buffers[i].mg_buffer);
+          dri2_surf->mg_color_buffers[i].memdc) {
+         dri2_minigui_destroy_memdc(dri2_surf->mg_color_buffers[i].memdc);
          munmap(dri2_surf->mg_color_buffers[i].data,
                 dri2_surf->mg_color_buffers[i].data_size);
-         dri2_surf->mg_color_buffers[i].mg_buffer = NULL;
+         dri2_surf->mg_color_buffers[i].memdc = NULL;
          dri2_surf->mg_color_buffers[i].data = NULL;
       }
    }
@@ -496,7 +515,7 @@ dri2_minigui_swrast_get_backbuffer_data(struct dri2_egl_surface *dri2_surf)
 static void
 dri2_minigui_swrast_commit_backbuffer(struct dri2_egl_surface *dri2_surf)
 {
-#if 0
+#if 0 // VW
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(dri2_surf->base.Resource.Display);
 
    while (dri2_surf->throttle_callback != NULL)
@@ -510,12 +529,14 @@ dri2_minigui_swrast_commit_backbuffer(struct dri2_egl_surface *dri2_surf)
       mg_callback_add_listener(dri2_surf->throttle_callback,
                                &throttle_listener, dri2_surf);
    }
+#endif
 
    dri2_surf->mg_current = dri2_surf->mg_back;
    dri2_surf->mg_back = NULL;
 
+#if 0 // VW
    mg_surface_attach(dri2_surf->mg_surface_wrapper,
-                     dri2_surf->mg_current->mg_buffer,
+                     dri2_surf->mg_current->memdc,
                      dri2_surf->dx, dri2_surf->dy);
 
    dri2_surf->mg_win->attached_width  = dri2_surf->base.Width;
@@ -540,6 +561,12 @@ dri2_minigui_swrast_commit_backbuffer(struct dri2_egl_surface *dri2_surf)
 
    mg_display_flush(dri2_dpy->mg_dpy);
 #endif
+
+   SelectClipRect(dri2_surf->mg_priv_cdc, NULL);
+   BitBlt(dri2_surf->mg_current->memdc, 0, 0, 0, 0,
+            dri2_surf->mg_priv_cdc, 0, 0, 0);
+
+   dri2_minigui_release_buffer(dri2_surf, dri2_surf->mg_current->memdc);
 }
 
 static void
@@ -554,6 +581,8 @@ dri2_minigui_swrast_get_drawable_info(__DRIdrawable * draw,
    *y = 0;
    *w = dri2_surf->base.Width;
    *h = dri2_surf->base.Height;
+    _DBG_PRINTF("called: x(%d), y(%d), w(%d), h(%d)\n",
+        *x, *y, *w, *h);
 }
 
 static void
@@ -571,9 +600,11 @@ dri2_minigui_swrast_get_image(__DRIdrawable * read,
    int dst_stride = copy_width;
    char *src, *dst;
 
+   _DBG_PRINTF("called\n");
    src = dri2_minigui_swrast_get_frontbuffer_data(dri2_surf);
    if (!src) {
       memset(data, 0, copy_width * h);
+      _DBG_PRINTF("clear and retrun\n");
       return;
    }
 
@@ -612,14 +643,18 @@ dri2_minigui_swrast_put_image2(__DRIdrawable * draw, int op,
 
    assert(copy_width <= stride);
 
+   _DBG_PRINTF("copy data: x(%d), y(%d), w(%d), h(%d), stride(%d)\n",
+        x, y, w, h, stride);
+
    (void) swrast_update_buffers(dri2_surf);
    dst = dri2_minigui_swrast_get_backbuffer_data(dri2_surf);
 
    /* partial copy, copy old content */
-   if (copy_width < dst_stride)
+   if (copy_width < dst_stride) {
       dri2_minigui_swrast_get_image(draw, 0, 0,
                                dri2_surf->base.Width, dri2_surf->base.Height,
                                dst, loaderPrivate);
+   }
 
    dst += x_offset;
    dst += y * dst_stride;
@@ -632,11 +667,15 @@ dri2_minigui_swrast_put_image2(__DRIdrawable * draw, int op,
    if (h > dri2_surf->base.Height-y)
       h = dri2_surf->base.Height-y;
 
+   _DBG_PRINTF("real copy: h(%d), copy_width(%d)\n",
+        h, copy_width);
+
    for (; h>0; h--) {
       memcpy(dst, src, copy_width);
       src += stride;
       dst += dst_stride;
    }
+
    dri2_minigui_swrast_commit_backbuffer(dri2_surf);
 }
 
@@ -648,21 +687,11 @@ dri2_minigui_swrast_put_image(__DRIdrawable * draw, int op,
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
    int stride;
 
+    _DBG_PRINTF("called\n");
    stride = dri2_minigui_swrast_get_stride_for_format(dri2_surf->mg_format,
                              w, NULL);
    dri2_minigui_swrast_put_image2(draw, op, x, y, w, h,
                              stride, data, loaderPrivate);
-}
-
-static EGLBoolean
-dri2_minigui_swrast_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp,
-        _EGLSurface *surf)
-{
-   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
-   struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
-
-   dri2_dpy->core->swapBuffers(dri2_surf->dri_drawable);
-   return EGL_TRUE;
 }
 
 static void
@@ -769,6 +798,8 @@ dri2_minigui_create_window_surface(_EGLDriver *drv, _EGLDisplay *disp,
       dri2_surf->mg_priv_cdc = CreatePrivateClientDC(dri2_surf->mg_win);
    }
 
+   _DBG_PRINTF("dri2_surf->mg_priv_cdc: %p\n", dri2_surf->mg_priv_cdc);
+
    dri2_surf->mg_cb_destroy = destroy_window_callback;
    if (dri2_dpy->flush)
       dri2_surf->mg_cb_resized = window_resized_callback;
@@ -802,6 +833,8 @@ dri2_minigui_create_pixmap_surface(_EGLDriver *drv, _EGLDisplay *disp,
    int visual_idx;
 
    (void) drv;
+
+   _DBG_PRINTF("called\n");
 
    if (!IsMemDC((HDC)native_pixmap)) {
       _eglError(EGL_BAD_PARAMETER,
@@ -919,11 +952,13 @@ dri2_minigui_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *su
 
    (void) drv;
 
+   _DBG_PRINTF("called\n");
+
    dri2_dpy->core->destroyDrawable(dri2_surf->dri_drawable);
 
    for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
-      if (dri2_surf->mg_color_buffers[i].mg_buffer)
-         mg_buffer_destroy(dri2_surf->mg_color_buffers[i].mg_buffer);
+      if (dri2_surf->mg_color_buffers[i].memdc)
+         dri2_minigui_destroy_memdc(dri2_surf->mg_color_buffers[i].memdc);
       if (dri2_surf->mg_color_buffers[i].dri_image)
          dri2_dpy->image->destroyImage(dri2_surf->mg_color_buffers[i].dri_image);
       if (dri2_surf->mg_color_buffers[i].linear_copy)
@@ -1135,6 +1170,8 @@ update_buffers(struct dri2_egl_surface *dri2_surf)
    }
 #endif
 
+   _DBG_PRINTF("called\n");
+
    GetClientRect (dri2_surf->mg_win, &rc_win);
    if (dri2_surf->base.Width != RECTW(rc_win) ||
        dri2_surf->base.Height != RECTH(rc_win)) {
@@ -1154,12 +1191,12 @@ update_buffers(struct dri2_egl_surface *dri2_surf)
     * That means we can free any unlocked buffer now. */
    for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
       if (!dri2_surf->mg_color_buffers[i].locked &&
-          dri2_surf->mg_color_buffers[i].mg_buffer) {
-         mg_buffer_destroy(dri2_surf->mg_color_buffers[i].mg_buffer);
+          dri2_surf->mg_color_buffers[i].memdc) {
+         dri2_minigui_destroy_memdc(dri2_surf->mg_color_buffers[i].memdc);
          dri2_dpy->image->destroyImage(dri2_surf->mg_color_buffers[i].dri_image);
          if (dri2_dpy->is_different_gpu)
             dri2_dpy->image->destroyImage(dri2_surf->mg_color_buffers[i].linear_copy);
-         dri2_surf->mg_color_buffers[i].mg_buffer = NULL;
+         dri2_surf->mg_color_buffers[i].memdc = NULL;
          dri2_surf->mg_color_buffers[i].dri_image = NULL;
          dri2_surf->mg_color_buffers[i].linear_copy = NULL;
       }
@@ -1265,6 +1302,7 @@ image_get_buffers(__DRIdrawable *driDrawable,
 {
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
 
+   _DBG_PRINTF("called\n");
    if (update_buffers(dri2_surf) < 0)
       return 0;
 
@@ -1281,6 +1319,7 @@ dri2_minigui_flush_front_buffer(__DRIdrawable * driDrawable, void *loaderPrivate
 
    /* FIXME: Does EGL support front buffer rendering at all? */
 
+   _DBG_PRINTF("called\n");
 #if 0
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
 
@@ -1376,7 +1415,7 @@ dri2_minigui_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *disp)
 
          /* Visual s works for the Wayland server, and c can be converted into s
           * by our client gpu during PRIME blitImage conversion to a linear
-          * mg_buffer, so add visual c as supported by the client renderer.
+          * memdc, so add visual c as supported by the client renderer.
           */
          dri2_conf = dri2_add_config(disp, dri2_dpy->driver_configs[i],
                                      count + 1, EGL_WINDOW_BIT, NULL,
@@ -1645,7 +1684,7 @@ dri2_minigui_swap_buffers_with_damage(_EGLDriver *drv,
    dri2_surf->mg_current = dri2_surf->mg_back;
    dri2_surf->mg_back = NULL;
 
-   if (!dri2_surf->mg_current->mg_buffer) {
+   if (!dri2_surf->mg_current->memdc) {
       __DRIimage *image;
 
       if (dri2_dpy->is_different_gpu)
@@ -1653,10 +1692,10 @@ dri2_minigui_swap_buffers_with_damage(_EGLDriver *drv,
       else
          image = dri2_surf->mg_current->dri_image;
 
-      dri2_surf->mg_current->mg_buffer =
+      dri2_surf->mg_current->memdc =
          create_minigui_buffer(dri2_dpy, dri2_surf, image);
 
-      dri2_surf->mg_current->mg_release = false;
+      dri2_surf->mg_current->release = false;
    }
 
    if (n_rects > 0 && rects) {
@@ -1681,6 +1720,11 @@ dri2_minigui_swap_buffers_with_damage(_EGLDriver *drv,
    if (dri2_dpy->flush)
       dri2_dpy->flush->invalidate(dri2_surf->dri_drawable);
 
+   BitBlt(dri2_surf->mg_current->memdc, 0, 0, 0, 0,
+            dri2_surf->mg_priv_cdc, 0, 0, 0);
+
+   dri2_minigui_release_buffer(dri2_surf, dri2_surf->mg_current->memdc);
+
 #if 0 // VW
    wl_surface_commit(dri2_surf->wl_surface_wrapper);
 
@@ -1704,6 +1748,25 @@ static EGLBoolean
 dri2_minigui_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
 {
    return dri2_minigui_swap_buffers_with_damage(drv, disp, surf, NULL, 0);
+}
+
+static EGLBoolean
+dri2_minigui_swrast_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp,
+        _EGLSurface *surf)
+{
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
+
+   dri2_dpy->core->swapBuffers(dri2_surf->dri_drawable);
+
+   _DBG_PRINTF("called\n");
+
+#if 0
+   if (dri2_surf->mg_win)
+      return dri2_minigui_swap_buffers_with_damage(drv, disp, surf, NULL, 0);
+#endif
+
+   return EGL_TRUE;
 }
 
 static _EGLImage *
@@ -1772,6 +1835,7 @@ static const struct dri2_egl_display_vtbl dri2_minigui_swrast_display_vtbl = {
    .destroy_surface = dri2_minigui_destroy_surface,
    .create_image = dri2_create_image_khr,
    .swap_buffers = dri2_minigui_swrast_swap_buffers,
+   .swap_buffers_with_damage = dri2_fallback_swap_buffers_with_damage,
    .swap_buffers_region = dri2_fallback_swap_buffers_region,
    .post_sub_buffer = dri2_fallback_post_sub_buffer,
    .copy_buffers = dri2_fallback_copy_buffers,
@@ -1781,7 +1845,7 @@ static const struct dri2_egl_display_vtbl dri2_minigui_swrast_display_vtbl = {
    .get_dri_drawable = dri2_surface_get_dri_drawable,
 };
 
-static const struct dri2_egl_display_vtbl dri2_minigui_display_vtbl = {
+static const struct dri2_egl_display_vtbl dri2_minigui_drm_display_vtbl = {
    .authenticate = dri2_minigui_authenticate,
    .create_window_surface = dri2_minigui_create_window_surface,
    .create_pixmap_surface = dri2_minigui_create_pixmap_surface,
@@ -1911,6 +1975,13 @@ static const __DRIdri2LoaderExtension dri2_loader_extension = {
    .getBuffersWithFormat = dri2_minigui_get_buffers_with_format,
 };
 
+static const __DRIimageLoaderExtension image_loader_extension = {
+   .base = { __DRI_IMAGE_LOADER, 1 },
+
+   .getBuffers          = image_get_buffers,
+   .flushFrontBuffer    = dri2_minigui_flush_front_buffer,
+};
+
 static const __DRIextension *dri2_loader_extensions_old[] = {
    &dri2_loader_extension_old.base,
    &image_lookup_extension.base,
@@ -1920,17 +1991,11 @@ static const __DRIextension *dri2_loader_extensions_old[] = {
 
 static const __DRIextension *dri2_loader_extensions[] = {
    &dri2_loader_extension.base,
+   &image_loader_extension.base,
    &image_lookup_extension.base,
    &use_invalidate.base,
    &background_callable_extension.base,
    NULL,
-};
-
-static const __DRIimageLoaderExtension image_loader_extension = {
-   .base = { __DRI_IMAGE_LOADER, 1 },
-
-   .getBuffers          = image_get_buffers,
-   .flushFrontBuffer    = dri2_minigui_flush_front_buffer,
 };
 
 static const __DRIextension *image_loader_extensions[] = {
@@ -2080,7 +2145,7 @@ dri2_initialize_minigui_dri2(_EGLDriver *drv, _EGLDisplay *disp)
    /* Fill vtbl last to prevent accidentally calling virtual function during
     * initialization.
     */
-   dri2_dpy->vtbl = &dri2_minigui_display_vtbl;
+   dri2_dpy->vtbl = &dri2_minigui_drm_display_vtbl;
 
    _eglLog(_EGL_INFO, "Using DRI2");
 

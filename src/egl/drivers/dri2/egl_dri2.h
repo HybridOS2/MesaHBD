@@ -377,8 +377,8 @@ struct dri2_egl_surface
    int         mg_format;
 
    struct {
-      HDC               mg_buffer;
-      bool              mg_release;
+      HDC               memdc;
+      bool              release;
       __DRIimage       *dri_image;
       /* for is_different_gpu case. NULL else */
       __DRIimage       *linear_copy;
