@@ -41,6 +41,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#include <minigui/common.h>
+#include <minigui/minigui.h>
+#include <minigui/gdi.h>
+#include <minigui/window.h>
+
 #include "util/debug.h"
 #include "util/macros.h"
 #include "util/u_vector.h"
@@ -116,9 +121,58 @@
 
 #endif /* HAVE_LIBDRM */
 
+#define MG_DRM_CAPABILITY_NAME      0x01
+#define MG_DRM_CAPABILITY_PRIME     0x02
+
+struct dri2_egl_drv_display
+{
+   struct dri2_egl_display base;
+
+   GHANDLE                   mg_video;
+   struct u_vector          *mg_modifiers;
+   BITSET_DECLARE(mg_formats, EGL_DRI2_MAX_FORMATS);
+   uint32_t                  mg_capabilities;
+};
+
+struct dri2_egl_drv_surface;
+
+typedef void (*CB_RESIZED)(HWND, struct dri2_egl_drv_surface* surf, const RECT* rc_client);
+typedef void (*CB_DESTROY)(HWND, struct dri2_egl_drv_surface* surf);
+
+struct dri2_egl_drv_surface
+{
+   struct dri2_egl_surface base;
+
+   HWND        mg_win;
+   WNDPROC     mg_old_proc;
+   CB_RESIZED  mg_cb_resized;
+   CB_DESTROY  mg_cb_destroy;
+   HDC         mg_priv_cdc;
+
+   HDC         mg_pixmap;
+   HDC         mg_swap_drawable;
+
+   __DRIimage *mg_dri_image_front;
+   __DRIimage *mg_dri_image_back;
+   int         mg_format;
+
+   struct {
+      HDC               memdc;
+      bool              release;
+      __DRIimage       *dri_image;
+      /* for is_different_gpu case. NULL else */
+      __DRIimage       *linear_copy;
+      /* for swrast */
+      void             *data;
+      int               data_size;
+      bool              locked;
+      int               age;
+   } mg_color_buffers[4], *mg_back, *mg_current;
+};
+
 /*
  * The index of entries in this table is used as a bitmask in
- * dri2_dpy->mg_formats, which tracks the formats supported by MiniGUI.
+ * dri2_drv_dpy->mg_formats, which tracks the formats supported by MiniGUI.
  */
 static const struct dri2_minigui_visual {
    const char *format_name;
@@ -225,6 +279,7 @@ dri2_minigui_visual_idx_from_dri_image_format(uint32_t dri_image_format)
    return -1;
 }
 
+#if 0 // VW
 static uint32_t
 dri2_minigui_format_from_masks(unsigned int rmask,
         unsigned int gmask, unsigned int bmask, unsigned int amask)
@@ -240,7 +295,6 @@ dri2_minigui_format_from_masks(unsigned int rmask,
    return 0;
 }
 
-#if 0 // VW
 static uint32_t
 dri2_minigui_image_format_from_masks(unsigned int rmask,
         unsigned int gmask, unsigned int bmask, unsigned int amask)
@@ -306,27 +360,27 @@ dri2_minigui_destroy_memdc(HDC dc)
 }
 
 static void
-dri2_minigui_release_buffer(struct dri2_egl_surface *dri2_surf, HDC *memdc)
+dri2_minigui_release_buffer(struct dri2_egl_drv_surface *dri2_drv_surf, HDC *memdc)
 {
    int i;
 
-   for (i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); ++i)
-      if (dri2_surf->mg_color_buffers[i].memdc == memdc)
+   for (i = 0; i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers); ++i)
+      if (dri2_drv_surf->mg_color_buffers[i].memdc == memdc)
          break;
 
-   assert (i < ARRAY_SIZE(dri2_surf->mg_color_buffers));
+   assert (i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers));
 
-   if (dri2_surf->mg_color_buffers[i].release) {
-      dri2_surf->mg_color_buffers[i].release = false;
+   if (dri2_drv_surf->mg_color_buffers[i].release) {
+      dri2_drv_surf->mg_color_buffers[i].release = false;
       //dri2_minigui_destroy_memdc(memdc);
-      //dri2_surf->mg_color_buffers[i].memdc = NULL;
+      //dri2_drv_surf->mg_color_buffers[i].memdc = NULL;
    }
 
-   dri2_surf->mg_color_buffers[i].locked = false;
+   dri2_drv_surf->mg_color_buffers[i].locked = false;
 }
 
 static EGLBoolean
-dri2_minigui_swrast_allocate_buffer(struct dri2_egl_surface *dri2_surf,
+dri2_minigui_swrast_allocate_buffer(struct dri2_egl_drv_surface *dri2_drv_surf,
                                int format, int w, int h,
                                void **data, int *size, HDC *dc)
 {
@@ -373,40 +427,40 @@ dri2_minigui_swrast_allocate_buffer(struct dri2_egl_surface *dri2_surf,
 }
 
 static void
-dri2_minigui_release_buffers(struct dri2_egl_surface *dri2_surf)
+dri2_minigui_release_buffers(struct dri2_egl_drv_surface *dri2_drv_surf)
 {
    struct dri2_egl_display *dri2_dpy =
-      dri2_egl_display(dri2_surf->base.Resource.Display);
+      dri2_egl_display(dri2_drv_surf->base.base.Resource.Display);
 
-   for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
-      if (dri2_surf->mg_color_buffers[i].memdc) {
-         if (dri2_surf->mg_color_buffers[i].locked) {
-            dri2_surf->mg_color_buffers[i].release = true;
+   for (int i = 0; i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers); i++) {
+      if (dri2_drv_surf->mg_color_buffers[i].memdc) {
+         if (dri2_drv_surf->mg_color_buffers[i].locked) {
+            dri2_drv_surf->mg_color_buffers[i].release = true;
          } else {
-            dri2_minigui_destroy_memdc(dri2_surf->mg_color_buffers[i].memdc);
-            dri2_surf->mg_color_buffers[i].memdc = NULL;
+            dri2_minigui_destroy_memdc(dri2_drv_surf->mg_color_buffers[i].memdc);
+            dri2_drv_surf->mg_color_buffers[i].memdc = NULL;
          }
       }
-      if (dri2_surf->mg_color_buffers[i].dri_image)
-         dri2_dpy->image->destroyImage(dri2_surf->mg_color_buffers[i].dri_image);
-      if (dri2_surf->mg_color_buffers[i].linear_copy)
-         dri2_dpy->image->destroyImage(dri2_surf->mg_color_buffers[i].linear_copy);
-      if (dri2_surf->mg_color_buffers[i].data)
-         munmap(dri2_surf->mg_color_buffers[i].data,
-                dri2_surf->mg_color_buffers[i].data_size);
+      if (dri2_drv_surf->mg_color_buffers[i].dri_image)
+         dri2_dpy->image->destroyImage(dri2_drv_surf->mg_color_buffers[i].dri_image);
+      if (dri2_drv_surf->mg_color_buffers[i].linear_copy)
+         dri2_dpy->image->destroyImage(dri2_drv_surf->mg_color_buffers[i].linear_copy);
+      if (dri2_drv_surf->mg_color_buffers[i].data)
+         munmap(dri2_drv_surf->mg_color_buffers[i].data,
+                dri2_drv_surf->mg_color_buffers[i].data_size);
 
-      dri2_surf->mg_color_buffers[i].dri_image = NULL;
-      dri2_surf->mg_color_buffers[i].linear_copy = NULL;
-      dri2_surf->mg_color_buffers[i].data = NULL;
+      dri2_drv_surf->mg_color_buffers[i].dri_image = NULL;
+      dri2_drv_surf->mg_color_buffers[i].linear_copy = NULL;
+      dri2_drv_surf->mg_color_buffers[i].data = NULL;
    }
 
    if (dri2_dpy->dri2)
-      dri2_egl_surface_free_local_buffers(dri2_surf);
+      dri2_egl_surface_free_local_buffers(&dri2_drv_surf->base);
 }
 
 
 static int
-swrast_update_buffers(struct dri2_egl_surface *dri2_surf)
+swrast_update_buffers(struct dri2_egl_drv_surface *dri2_drv_surf)
 {
 #if 0 // VW
    struct dri2_egl_display *dri2_dpy =
@@ -415,80 +469,71 @@ swrast_update_buffers(struct dri2_egl_surface *dri2_surf)
    RECT rc_win;
 
    /* we need to do the following operations only once per frame */
-   if (dri2_surf->mg_back)
+   if (dri2_drv_surf->mg_back)
       return 0;
 
-   GetClientRect(dri2_surf->mg_win, &rc_win);
-   if (dri2_surf->base.Width != RECTW(rc_win) ||
-       dri2_surf->base.Height != RECTH(rc_win)) {
+   GetClientRect(dri2_drv_surf->mg_win, &rc_win);
+   if (dri2_drv_surf->base.base.Width != RECTW(rc_win) ||
+       dri2_drv_surf->base.base.Height != RECTH(rc_win)) {
 
-      dri2_minigui_release_buffers(dri2_surf);
+      dri2_minigui_release_buffers(dri2_drv_surf);
 
-      dri2_surf->base.Width  = RECTW(rc_win);
-      dri2_surf->base.Height = RECTH(rc_win);
-      dri2_surf->mg_current = NULL;
+      dri2_drv_surf->base.base.Width  = RECTW(rc_win);
+      dri2_drv_surf->base.base.Height = RECTH(rc_win);
+      dri2_drv_surf->mg_current = NULL;
    }
-
-#if 0 // VW
-   /* There might be a buffer release already queued that wasn't processed */
-   mg_display_dispatch_queue_pending(dri2_dpy->mg_dpy, dri2_surf->mg_queue);
-#endif
 
    /* find back buffer */
 
    /* try get free buffer already created */
-   for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
-      if (!dri2_surf->mg_color_buffers[i].locked &&
-          dri2_surf->mg_color_buffers[i].memdc) {
-          dri2_surf->mg_back = &dri2_surf->mg_color_buffers[i];
+   for (int i = 0; i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers); i++) {
+      if (!dri2_drv_surf->mg_color_buffers[i].locked &&
+          dri2_drv_surf->mg_color_buffers[i].memdc) {
+          dri2_drv_surf->mg_back = &dri2_drv_surf->mg_color_buffers[i];
           break;
       }
    }
 
    /* else choose any another free location */
-   if (!dri2_surf->mg_back) {
-      for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
-         if (!dri2_surf->mg_color_buffers[i].locked) {
-             dri2_surf->mg_back = &dri2_surf->mg_color_buffers[i];
-             if (!dri2_minigui_swrast_allocate_buffer(dri2_surf,
-                                                 dri2_surf->mg_format,
-                                                 dri2_surf->base.Width,
-                                                 dri2_surf->base.Height,
-                                                 &dri2_surf->mg_back->data,
-                                                 &dri2_surf->mg_back->data_size,
-                                                 &dri2_surf->mg_back->memdc)) {
+   if (!dri2_drv_surf->mg_back) {
+      for (int i = 0; i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers); i++) {
+         if (!dri2_drv_surf->mg_color_buffers[i].locked) {
+             dri2_drv_surf->mg_back = &dri2_drv_surf->mg_color_buffers[i];
+             if (!dri2_minigui_swrast_allocate_buffer(dri2_drv_surf,
+                                                 dri2_drv_surf->mg_format,
+                                                 dri2_drv_surf->base.base.Width,
+                                                 dri2_drv_surf->base.base.Height,
+                                                 &dri2_drv_surf->mg_back->data,
+                                                 &dri2_drv_surf->mg_back->data_size,
+                                                 &dri2_drv_surf->mg_back->memdc)) {
                  _DBG_PRINTF("failed to allocate color buffer\n");
                  _eglError(EGL_BAD_ALLOC, "failed to allocate color buffer");
                  return -1;
              }
-#if 0 // VW
-             memdc_add_listener(dri2_surf->mg_back->memdc,
-                                    &memdc_listener, dri2_surf);
-#endif
              break;
          }
       }
    }
 
-   if (!dri2_surf->mg_back) {
+   if (!dri2_drv_surf->mg_back) {
       _DBG_PRINTF("failed to find free buffer\n");
       _eglError(EGL_BAD_ALLOC, "failed to find free buffer");
       return -1;
    }
 
-   dri2_surf->mg_back->locked = true;
+   dri2_drv_surf->mg_back->locked = true;
 
    /* If we have an extra unlocked buffer at this point, we had to do triple
     * buffering for a while, but now can go back to just double buffering.
     * That means we can free any unlocked buffer now. */
-   for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
-      if (!dri2_surf->mg_color_buffers[i].locked &&
-          dri2_surf->mg_color_buffers[i].memdc) {
-         dri2_minigui_destroy_memdc(dri2_surf->mg_color_buffers[i].memdc);
-         munmap(dri2_surf->mg_color_buffers[i].data,
-                dri2_surf->mg_color_buffers[i].data_size);
-         dri2_surf->mg_color_buffers[i].memdc = NULL;
-         dri2_surf->mg_color_buffers[i].data = NULL;
+   for (int i = 0; i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers); i++) {
+      if (!dri2_drv_surf->mg_color_buffers[i].locked &&
+          dri2_drv_surf->mg_color_buffers[i].memdc) {
+         dri2_minigui_destroy_memdc(dri2_drv_surf->mg_color_buffers[i].memdc);
+         munmap(dri2_drv_surf->mg_color_buffers[i].data,
+                dri2_drv_surf->mg_color_buffers[i].data_size);
+         dri2_drv_surf->mg_color_buffers[i].memdc = NULL;
+         dri2_drv_surf->mg_color_buffers[i].data = NULL;
       }
    }
 
@@ -496,77 +541,33 @@ swrast_update_buffers(struct dri2_egl_surface *dri2_surf)
 }
 
 static void*
-dri2_minigui_swrast_get_frontbuffer_data(struct dri2_egl_surface *dri2_surf)
+dri2_minigui_swrast_get_frontbuffer_data(struct dri2_egl_drv_surface *dri2_drv_surf)
 {
    /* if there has been a resize: */
-   if (!dri2_surf->mg_current)
+   if (!dri2_drv_surf->mg_current)
       return NULL;
 
-   return dri2_surf->mg_current->data;
+   return dri2_drv_surf->mg_current->data;
 }
 
 static void*
-dri2_minigui_swrast_get_backbuffer_data(struct dri2_egl_surface *dri2_surf)
+dri2_minigui_swrast_get_backbuffer_data(struct dri2_egl_drv_surface *dri2_drv_surf)
 {
-   assert(dri2_surf->mg_back);
-   return dri2_surf->mg_back->data;
+   assert(dri2_drv_surf->mg_back);
+   return dri2_drv_surf->mg_back->data;
 }
 
 static void
-dri2_minigui_swrast_commit_backbuffer(struct dri2_egl_surface *dri2_surf)
+dri2_minigui_swrast_commit_backbuffer(struct dri2_egl_drv_surface *dri2_drv_surf)
 {
-#if 0 // VW
-   struct dri2_egl_display *dri2_dpy = dri2_egl_display(dri2_surf->base.Resource.Display);
+   dri2_drv_surf->mg_current = dri2_drv_surf->mg_back;
+   dri2_drv_surf->mg_back = NULL;
 
-   while (dri2_surf->throttle_callback != NULL)
-      if (mg_display_dispatch_queue(dri2_dpy->mg_dpy,
-                                    dri2_surf->mg_queue) == -1)
-         return;
+   SelectClipRect(dri2_drv_surf->mg_priv_cdc, NULL);
+   BitBlt(dri2_drv_surf->mg_current->memdc, 0, 0, 0, 0,
+            dri2_drv_surf->mg_priv_cdc, 0, 0, 0);
 
-   if (dri2_surf->base.SwapInterval > 0) {
-      dri2_surf->throttle_callback =
-         mg_surface_frame(dri2_surf->mg_surface_wrapper);
-      mg_callback_add_listener(dri2_surf->throttle_callback,
-                               &throttle_listener, dri2_surf);
-   }
-#endif
-
-   dri2_surf->mg_current = dri2_surf->mg_back;
-   dri2_surf->mg_back = NULL;
-
-#if 0 // VW
-   mg_surface_attach(dri2_surf->mg_surface_wrapper,
-                     dri2_surf->mg_current->memdc,
-                     dri2_surf->dx, dri2_surf->dy);
-
-   dri2_surf->mg_win->attached_width  = dri2_surf->base.Width;
-   dri2_surf->mg_win->attached_height = dri2_surf->base.Height;
-   /* reset resize growing parameters */
-   dri2_surf->dx = 0;
-   dri2_surf->dy = 0;
-
-   mg_surface_damage(dri2_surf->mg_surface_wrapper,
-                     0, 0, INT32_MAX, INT32_MAX);
-   mg_surface_commit(dri2_surf->mg_surface_wrapper);
-
-   /* If we're not waiting for a frame callback then we'll at least throttle
-    * to a sync callback so that we always give a chance for the compositor to
-    * handle the commit and send a release event before checking for a free
-    * buffer */
-   if (dri2_surf->throttle_callback == NULL) {
-      dri2_surf->throttle_callback = mg_display_sync(dri2_surf->mg_dpy_wrapper);
-      mg_callback_add_listener(dri2_surf->throttle_callback,
-                               &throttle_listener, dri2_surf);
-   }
-
-   mg_display_flush(dri2_dpy->mg_dpy);
-#endif
-
-   SelectClipRect(dri2_surf->mg_priv_cdc, NULL);
-   BitBlt(dri2_surf->mg_current->memdc, 0, 0, 0, 0,
-            dri2_surf->mg_priv_cdc, 0, 0, 0);
-
-   dri2_minigui_release_buffer(dri2_surf, dri2_surf->mg_current->memdc);
+   dri2_minigui_release_buffer(dri2_drv_surf, dri2_drv_surf->mg_current->memdc);
 }
 
 static void
@@ -574,13 +575,13 @@ dri2_minigui_swrast_get_drawable_info(__DRIdrawable * draw,
                                  int *x, int *y, int *w, int *h,
                                  void *loaderPrivate)
 {
-   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   struct dri2_egl_drv_surface *dri2_drv_surf = loaderPrivate;
 
-   (void) swrast_update_buffers(dri2_surf);
+   (void) swrast_update_buffers(dri2_drv_surf);
    *x = 0;
    *y = 0;
-   *w = dri2_surf->base.Width;
-   *h = dri2_surf->base.Height;
+   *w = dri2_drv_surf->base.base.Width;
+   *h = dri2_drv_surf->base.base.Height;
     _DBG_PRINTF("called: x(%d), y(%d), w(%d), h(%d)\n",
         *x, *y, *w, *h);
 }
@@ -590,18 +591,19 @@ dri2_minigui_swrast_get_image(__DRIdrawable * read,
                          int x, int y, int w, int h,
                          char *data, void *loaderPrivate)
 {
-   struct dri2_egl_surface *dri2_surf = loaderPrivate;
-   int copy_width = dri2_minigui_swrast_get_stride_for_format(dri2_surf->mg_format,
+   struct dri2_egl_drv_surface *dri2_drv_surf = loaderPrivate;
+   struct dri2_egl_surface *dri2_surf = &dri2_drv_surf->base;
+   int copy_width = dri2_minigui_swrast_get_stride_for_format(dri2_drv_surf->mg_format,
             w, NULL);
-   int x_offset = dri2_minigui_swrast_get_stride_for_format(dri2_surf->mg_format,
+   int x_offset = dri2_minigui_swrast_get_stride_for_format(dri2_drv_surf->mg_format,
             x, NULL);
-   int src_stride = dri2_minigui_swrast_get_stride_for_format(dri2_surf->mg_format,
+   int src_stride = dri2_minigui_swrast_get_stride_for_format(dri2_drv_surf->mg_format,
             dri2_surf->base.Width, NULL);
    int dst_stride = copy_width;
    char *src, *dst;
 
    _DBG_PRINTF("called\n");
-   src = dri2_minigui_swrast_get_frontbuffer_data(dri2_surf);
+   src = dri2_minigui_swrast_get_frontbuffer_data(dri2_drv_surf);
    if (!src) {
       memset(data, 0, copy_width * h);
       _DBG_PRINTF("clear and retrun\n");
@@ -632,12 +634,12 @@ dri2_minigui_swrast_put_image2(__DRIdrawable * draw, int op,
                          int x, int y, int w, int h, int stride,
                          char *data, void *loaderPrivate)
 {
-   struct dri2_egl_surface *dri2_surf = loaderPrivate;
-   int copy_width = dri2_minigui_swrast_get_stride_for_format(dri2_surf->mg_format,
+   struct dri2_egl_drv_surface *dri2_drv_surf = loaderPrivate;
+   int copy_width = dri2_minigui_swrast_get_stride_for_format(dri2_drv_surf->mg_format,
             w, NULL);
-   int dst_stride = dri2_minigui_swrast_get_stride_for_format(dri2_surf->mg_format,
-            dri2_surf->base.Width, NULL);
-   int x_offset = dri2_minigui_swrast_get_stride_for_format(dri2_surf->mg_format,
+   int dst_stride = dri2_minigui_swrast_get_stride_for_format(dri2_drv_surf->mg_format,
+            dri2_drv_surf->base.base.Width, NULL);
+   int x_offset = dri2_minigui_swrast_get_stride_for_format(dri2_drv_surf->mg_format,
             x, NULL);
    char *src, *dst;
 
@@ -646,13 +648,14 @@ dri2_minigui_swrast_put_image2(__DRIdrawable * draw, int op,
    _DBG_PRINTF("copy data: x(%d), y(%d), w(%d), h(%d), stride(%d)\n",
         x, y, w, h, stride);
 
-   (void) swrast_update_buffers(dri2_surf);
-   dst = dri2_minigui_swrast_get_backbuffer_data(dri2_surf);
+   (void) swrast_update_buffers(dri2_drv_surf);
+   dst = dri2_minigui_swrast_get_backbuffer_data(dri2_drv_surf);
 
    /* partial copy, copy old content */
    if (copy_width < dst_stride) {
       dri2_minigui_swrast_get_image(draw, 0, 0,
-                               dri2_surf->base.Width, dri2_surf->base.Height,
+                               dri2_drv_surf->base.base.Width,
+                               dri2_drv_surf->base.base.Height,
                                dst, loaderPrivate);
    }
 
@@ -664,8 +667,8 @@ dri2_minigui_swrast_put_image2(__DRIdrawable * draw, int op,
    /* drivers expect we do these checks (and some rely on it) */
    if (copy_width > dst_stride-x_offset)
       copy_width = dst_stride-x_offset;
-   if (h > dri2_surf->base.Height-y)
-      h = dri2_surf->base.Height-y;
+   if (h > dri2_drv_surf->base.base.Height-y)
+      h = dri2_drv_surf->base.base.Height-y;
 
    _DBG_PRINTF("real copy: h(%d), copy_width(%d)\n",
         h, copy_width);
@@ -676,7 +679,7 @@ dri2_minigui_swrast_put_image2(__DRIdrawable * draw, int op,
       dst += dst_stride;
    }
 
-   dri2_minigui_swrast_commit_backbuffer(dri2_surf);
+   dri2_minigui_swrast_commit_backbuffer(dri2_drv_surf);
 }
 
 static void
@@ -684,22 +687,22 @@ dri2_minigui_swrast_put_image(__DRIdrawable * draw, int op,
                          int x, int y, int w, int h,
                          char *data, void *loaderPrivate)
 {
-   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   struct dri2_egl_drv_surface *dri2_drv_surf = loaderPrivate;
    int stride;
 
     _DBG_PRINTF("called\n");
-   stride = dri2_minigui_swrast_get_stride_for_format(dri2_surf->mg_format,
+   stride = dri2_minigui_swrast_get_stride_for_format(dri2_drv_surf->mg_format,
                              w, NULL);
    dri2_minigui_swrast_put_image2(draw, op, x, y, w, h,
                              stride, data, loaderPrivate);
 }
 
 static void
-window_resized_callback (HWND hwnd, struct dri2_egl_surface *dri2_surf,
+window_resized_callback (HWND hwnd, struct dri2_egl_drv_surface *dri2_drv_surf,
         const RECT* rc_client)
 {
    struct dri2_egl_display *dri2_dpy =
-      dri2_egl_display(dri2_surf->base.Resource.Display);
+      dri2_egl_display(dri2_drv_surf->base.base.Resource.Display);
 
    /* Update the surface size as soon as native window is resized; from user
     * pov, this makes the effect that resize is done immediately after native
@@ -708,41 +711,41 @@ window_resized_callback (HWND hwnd, struct dri2_egl_surface *dri2_surf,
     * A more detailed and lengthy explanation can be found at
     * https://lists.freedesktop.org/archives/mesa-dev/2018-June/196474.html
     */
-   if (!dri2_surf->mg_back) {
-      dri2_surf->base.Width = RECTWP(rc_client);
-      dri2_surf->base.Height = RECTHP(rc_client);
+   if (!dri2_drv_surf->mg_back) {
+      dri2_drv_surf->base.base.Width = RECTWP(rc_client);
+      dri2_drv_surf->base.base.Height = RECTHP(rc_client);
    }
 
    if (dri2_dpy->flush)
-      dri2_dpy->flush->invalidate(dri2_surf->dri_drawable);
+      dri2_dpy->flush->invalidate(dri2_drv_surf->base.dri_drawable);
 }
 
 static void
-destroy_window_callback (HWND hwnd, struct dri2_egl_surface *dri2_surf)
+destroy_window_callback (HWND hwnd, struct dri2_egl_drv_surface *dri2_drv_surf)
 {
-   dri2_surf->mg_win = HWND_NULL;
+   dri2_drv_surf->mg_win = HWND_NULL;
 }
 
 static LRESULT egl_window_proc (HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
-   struct dri2_egl_surface *dri2_surf;
+   struct dri2_egl_drv_surface *dri2_drv_surf;
 
-   dri2_surf = (struct dri2_egl_surface *)GetWindowAdditionalData2 (hwnd);
+   dri2_drv_surf = (struct dri2_egl_drv_surface *)GetWindowAdditionalData2 (hwnd);
    switch (msg) {
    case MSG_SIZECHANGED:
-      if (dri2_surf->mg_cb_resized) {
-         dri2_surf->mg_cb_resized (hwnd, dri2_surf, (const RECT*)lparam);
+      if (dri2_drv_surf->mg_cb_resized) {
+         dri2_drv_surf->mg_cb_resized (hwnd, dri2_drv_surf, (const RECT*)lparam);
       }
       break;
 
    case MSG_DESTROY:
-      if (dri2_surf->mg_cb_destroy) {
-         dri2_surf->mg_cb_destroy (hwnd, dri2_surf);
+      if (dri2_drv_surf->mg_cb_destroy) {
+         dri2_drv_surf->mg_cb_destroy (hwnd, dri2_drv_surf);
       }
       break;
    }
 
-   return dri2_surf->mg_old_proc (hwnd, msg, wparam, lparam);
+   return dri2_drv_surf->mg_old_proc (hwnd, msg, wparam, lparam);
 }
 
 /**
@@ -755,67 +758,68 @@ dri2_minigui_create_window_surface(_EGLDriver *drv, _EGLDisplay *disp,
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_config *dri2_conf = dri2_egl_config(conf);
-   struct dri2_egl_surface *dri2_surf;
+   struct dri2_egl_drv_surface *dri2_drv_surf;
    const __DRIconfig *config;
    RECT win_cli_rc;
    int visual_idx;
 
    (void) drv;
 
-   dri2_surf = calloc(1, sizeof *dri2_surf);
-   if (!dri2_surf) {
+   dri2_drv_surf = calloc(1, sizeof *dri2_drv_surf);
+   if (!dri2_drv_surf) {
       _eglError(EGL_BAD_ALLOC, "dri2_create_window_surface");
       return NULL;
    }
 
-   if (!dri2_init_surface(&dri2_surf->base, disp, EGL_WINDOW_BIT, conf,
+   if (!dri2_init_surface(&dri2_drv_surf->base.base, disp, EGL_WINDOW_BIT, conf,
                             attrib_list, false, native_window))
       goto cleanup_surf;
 
    config = dri2_get_dri_config(dri2_conf, EGL_WINDOW_BIT,
-                                dri2_surf->base.GLColorspace);
+                                dri2_drv_surf->base.base.GLColorspace);
 
    if (!config) {
       _eglError(EGL_BAD_MATCH, "Unsupported surfacetype/colorspace configuration");
       goto cleanup_pixmap;
    }
 
-   dri2_surf->mg_win = (HWND)native_window;
-   GetClientRect (dri2_surf->mg_win, &win_cli_rc);
-   dri2_surf->base.Width = RECTW(win_cli_rc);
-   dri2_surf->base.Height = RECTH(win_cli_rc);
+   dri2_drv_surf->mg_win = (HWND)native_window;
+   GetClientRect (dri2_drv_surf->mg_win, &win_cli_rc);
+   dri2_drv_surf->base.base.Width = RECTW(win_cli_rc);
+   dri2_drv_surf->base.base.Height = RECTH(win_cli_rc);
 
    visual_idx = dri2_minigui_visual_idx_from_config(dri2_dpy, config);
    assert(visual_idx != -1);
-   dri2_surf->mg_format = dri2_mg_visuals[visual_idx].drm_format;
+   dri2_drv_surf->mg_format = dri2_mg_visuals[visual_idx].drm_format;
 
-   SetWindowAdditionalData2(dri2_surf->mg_win, (DWORD)dri2_surf);
-   dri2_surf->mg_old_proc = GetWindowCallbackProc(dri2_surf->mg_win);
-   SetWindowCallbackProc(dri2_surf->mg_win, egl_window_proc);
+   SetWindowAdditionalData2(dri2_drv_surf->mg_win, (DWORD)dri2_drv_surf);
+   dri2_drv_surf->mg_old_proc = GetWindowCallbackProc(dri2_drv_surf->mg_win);
+   SetWindowCallbackProc(dri2_drv_surf->mg_win, egl_window_proc);
 
-   dri2_surf->mg_priv_cdc = GetPrivateClientDC(dri2_surf->mg_win);
-   if (!dri2_surf->mg_priv_cdc) {
-      dri2_surf->mg_priv_cdc = CreatePrivateClientDC(dri2_surf->mg_win);
+   dri2_drv_surf->mg_priv_cdc = GetPrivateClientDC(dri2_drv_surf->mg_win);
+   if (!dri2_drv_surf->mg_priv_cdc) {
+      dri2_drv_surf->mg_priv_cdc = CreatePrivateClientDC(dri2_drv_surf->mg_win);
    }
 
-   _DBG_PRINTF("dri2_surf->mg_priv_cdc: %p\n", dri2_surf->mg_priv_cdc);
+   _DBG_PRINTF("dri2_drv_surf->mg_priv_cdc: %p\n", dri2_drv_surf->mg_priv_cdc);
 
-   dri2_surf->mg_cb_destroy = destroy_window_callback;
+   dri2_drv_surf->mg_cb_destroy = destroy_window_callback;
    if (dri2_dpy->flush)
-      dri2_surf->mg_cb_resized = window_resized_callback;
+      dri2_drv_surf->mg_cb_resized = window_resized_callback;
 
-   if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf)) {
+   if (!dri2_create_drawable(dri2_dpy, config, &dri2_drv_surf->base,
+            &dri2_drv_surf->base)) {
       _eglError(EGL_BAD_MATCH, "failed to create dri_drawable");
       goto cleanup_pixmap;
    }
 
-   dri2_surf->base.SwapInterval = dri2_dpy->default_swap_interval;
+   dri2_drv_surf->base.base.SwapInterval = dri2_dpy->default_swap_interval;
 
-   return &dri2_surf->base;
+   return &dri2_drv_surf->base.base;
 
  cleanup_pixmap:
  cleanup_surf:
-   free(dri2_surf);
+   free(dri2_drv_surf);
 
    return NULL;
 }
@@ -825,6 +829,17 @@ dri2_minigui_create_pixmap_surface(_EGLDriver *drv, _EGLDisplay *disp,
                                _EGLConfig *conf, void *native_pixmap,
                                const EGLint *attrib_list)
 {
+#if 1
+   /* From the EGL_EXT_platform_minigui spec, version 1:
+    *
+    *   It is not valid to call eglCreatePlatformPixmapSurfaceEXT with a <dpy>
+    *   that belongs to Wayland. Any such call fails and generates
+    *   EGL_BAD_PARAMETER.
+    */
+   _eglError(EGL_BAD_PARAMETER, "cannot create EGL pixmap surfaces on "
+             "MiniGUI");
+   return NULL;
+#else
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_config *dri2_conf = dri2_egl_config(conf);
    struct dri2_egl_surface *dri2_surf;
@@ -852,7 +867,7 @@ dri2_minigui_create_pixmap_surface(_EGLDriver *drv, _EGLDisplay *disp,
                           false, native_pixmap))
       goto cleanup_surf;
 
-   dri2_surf->mg_pixmap = (HDC)native_pixmap;
+   dri2_drv_surf->mg_pixmap = (HDC)native_pixmap;
 
    config = dri2_get_dri_config(dri2_conf, EGL_PIXMAP_BIT,
                                 dri2_surf->base.GLColorspace);
@@ -866,15 +881,15 @@ dri2_minigui_create_pixmap_surface(_EGLDriver *drv, _EGLDisplay *disp,
 
    if (dri2_dpy->dri2) {
       // get and bind to the direct buffer object.
-      if (!drmGetSurfaceInfo(dri2_dpy->mg_video, (HDC)native_pixmap, &info)) {
+      if (!drmGetSurfaceInfo(dri2_drv_dpy->mg_video, (HDC)native_pixmap, &info)) {
          _eglError(EGL_BAD_MATCH, "Not a DRM surface");
          goto cleanup_dri_drawable;
       }
 
       dri2_surf->base.Width = info.width;
       dri2_surf->base.Height = info.height;
-      dri2_surf->mg_format = info.drm_format;
-      visual_idx = dri2_minigui_visual_idx_from_fourcc(dri2_surf->mg_format);
+      dri2_drv_surf->mg_format = info.drm_format;
+      visual_idx = dri2_minigui_visual_idx_from_fourcc(dri2_drv_surf->mg_format);
       if (visual_idx < 0) {
          _eglError(EGL_BAD_MATCH, "Unsupported colorspace configuration");
          goto cleanup_dri_drawable;
@@ -883,12 +898,12 @@ dri2_minigui_create_pixmap_surface(_EGLDriver *drv, _EGLDisplay *disp,
    else {
       dri2_surf->base.Width = GetGDCapability((HDC)native_pixmap, GDCAP_HPIXEL);
       dri2_surf->base.Height = GetGDCapability((HDC)native_pixmap, GDCAP_VPIXEL);
-      dri2_surf->mg_format = dri2_minigui_format_from_masks (
+      dri2_drv_surf->mg_format = dri2_minigui_format_from_masks (
                     GetGDCapability((HDC)native_pixmap, GDCAP_RMASK),
                     GetGDCapability((HDC)native_pixmap, GDCAP_GMASK),
                     GetGDCapability((HDC)native_pixmap, GDCAP_BMASK),
                     GetGDCapability((HDC)native_pixmap, GDCAP_AMASK));
-      visual_idx = dri2_minigui_visual_idx_from_fourcc(dri2_surf->mg_format);
+      visual_idx = dri2_minigui_visual_idx_from_fourcc(dri2_drv_surf->mg_format);
       if (visual_idx < 0) {
          _eglError(EGL_BAD_MATCH, "Unsupported colorspace configuration");
          goto cleanup_dri_drawable;
@@ -903,6 +918,7 @@ dri2_minigui_create_pixmap_surface(_EGLDriver *drv, _EGLDisplay *disp,
    free(dri2_surf);
 
    return NULL;
+#endif
 }
 
 static _EGLSurface *
@@ -916,7 +932,7 @@ dri2_minigui_create_pbuffer_surface(_EGLDriver *drv, _EGLDisplay *disp,
 
    (void) drv;
 
-   dri2_surf = calloc(1, sizeof *dri2_surf);
+   dri2_surf = calloc(1, sizeof (struct dri2_egl_drv_surface));
    if (!dri2_surf) {
       _eglError(EGL_BAD_ALLOC, "create_pbuffer_surface");
       return NULL;
@@ -949,6 +965,7 @@ dri2_minigui_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *su
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
+   struct dri2_egl_drv_surface *dri2_drv_surf = (struct dri2_egl_drv_surface *)dri2_surf;
 
    (void) drv;
 
@@ -956,38 +973,25 @@ dri2_minigui_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *su
 
    dri2_dpy->core->destroyDrawable(dri2_surf->dri_drawable);
 
-   for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
-      if (dri2_surf->mg_color_buffers[i].memdc)
-         dri2_minigui_destroy_memdc(dri2_surf->mg_color_buffers[i].memdc);
-      if (dri2_surf->mg_color_buffers[i].dri_image)
-         dri2_dpy->image->destroyImage(dri2_surf->mg_color_buffers[i].dri_image);
-      if (dri2_surf->mg_color_buffers[i].linear_copy)
-         dri2_dpy->image->destroyImage(dri2_surf->mg_color_buffers[i].linear_copy);
-      if (dri2_surf->mg_color_buffers[i].data)
-         munmap(dri2_surf->mg_color_buffers[i].data,
-                dri2_surf->mg_color_buffers[i].data_size);
+   for (int i = 0; i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers); i++) {
+      if (dri2_drv_surf->mg_color_buffers[i].memdc)
+         dri2_minigui_destroy_memdc(dri2_drv_surf->mg_color_buffers[i].memdc);
+      if (dri2_drv_surf->mg_color_buffers[i].dri_image)
+         dri2_dpy->image->destroyImage(dri2_drv_surf->mg_color_buffers[i].dri_image);
+      if (dri2_drv_surf->mg_color_buffers[i].linear_copy)
+         dri2_dpy->image->destroyImage(dri2_drv_surf->mg_color_buffers[i].linear_copy);
+      if (dri2_drv_surf->mg_color_buffers[i].data)
+         munmap(dri2_drv_surf->mg_color_buffers[i].data,
+                dri2_drv_surf->mg_color_buffers[i].data_size);
    }
 
    if (dri2_dpy->dri2)
       dri2_egl_surface_free_local_buffers(dri2_surf);
 
-#if 0 // VW
-   if (dri2_surf->throttle_callback)
-      mg_callback_destroy(dri2_surf->throttle_callback);
-#endif
-
-   if (dri2_surf->mg_win) {
-      dri2_surf->mg_cb_resized = NULL;
-      dri2_surf->mg_cb_destroy = NULL;
+   if (dri2_drv_surf->mg_win) {
+      dri2_drv_surf->mg_cb_resized = NULL;
+      dri2_drv_surf->mg_cb_destroy = NULL;
    }
-
-#if 0 // VW
-   mg_proxy_wrapper_destroy(dri2_surf->mg_surface_wrapper);
-   mg_proxy_wrapper_destroy(dri2_surf->mg_dpy_wrapper);
-   if (dri2_surf->mg_drm_wrapper)
-      mg_proxy_wrapper_destroy(dri2_surf->mg_drm_wrapper);
-   mg_event_queue_destroy(dri2_surf->mg_queue);
-#endif
 
    dri2_fini_surface(surf);
    free(surf);
@@ -996,10 +1000,12 @@ dri2_minigui_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *su
 }
 
 static int
-get_back_bo(struct dri2_egl_surface *dri2_surf)
+get_back_bo(struct dri2_egl_drv_surface *dri2_drv_surf)
 {
    struct dri2_egl_display *dri2_dpy =
-      dri2_egl_display(dri2_surf->base.Resource.Display);
+      dri2_egl_display(dri2_drv_surf->base.base.Resource.Display);
+   struct dri2_egl_drv_display *dri2_drv_dpy =
+      (struct dri2_egl_drv_display *)dri2_dpy;
    int use_flags;
    int visual_idx;
    unsigned int dri_image_format;
@@ -1007,15 +1013,15 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
    uint64_t *modifiers;
    int num_modifiers;
 
-   visual_idx = dri2_minigui_visual_idx_from_fourcc(dri2_surf->mg_format);
+   visual_idx = dri2_minigui_visual_idx_from_fourcc(dri2_drv_surf->mg_format);
    assert(visual_idx != -1);
    dri_image_format = dri2_mg_visuals[visual_idx].dri_image_format;
    linear_dri_image_format = dri_image_format;
-   modifiers = u_vector_tail(&dri2_dpy->mg_modifiers[visual_idx]);
-   num_modifiers = u_vector_length(&dri2_dpy->mg_modifiers[visual_idx]);
+   modifiers = u_vector_tail(&dri2_drv_dpy->mg_modifiers[visual_idx]);
+   num_modifiers = u_vector_length(&dri2_drv_dpy->mg_modifiers[visual_idx]);
 
    /* Substitute dri image format if server does not support original format */
-   if (!BITSET_TEST(dri2_dpy->mg_formats, visual_idx))
+   if (!BITSET_TEST(dri2_drv_dpy->mg_formats, visual_idx))
       linear_dri_image_format = dri2_mg_visuals[visual_idx].alt_dri_image_format;
 
    /* These asserts hold, as long as dri2_mg_visuals[] is self-consistent and
@@ -1023,119 +1029,107 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
     * of bugs.
     */
    assert(linear_dri_image_format != __DRI_IMAGE_FORMAT_NONE);
-   assert(BITSET_TEST(dri2_dpy->mg_formats,
+   assert(BITSET_TEST(dri2_drv_dpy->mg_formats,
           dri2_minigui_visual_idx_from_dri_image_format(linear_dri_image_format)));
 
-   /* There might be a buffer release already queued that wasn't processed */
-   // VW: mg_display_dispatch_queue_pending(dri2_dpy->mg_dpy, dri2_surf->mg_queue);
-
-   while (dri2_surf->mg_back == NULL) {
-      for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
+   while (dri2_drv_surf->mg_back == NULL) {
+      for (int i = 0; i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers); i++) {
          /* Get an unlocked buffer, preferably one with a dri_buffer
           * already allocated. */
-         if (dri2_surf->mg_color_buffers[i].locked)
+         if (dri2_drv_surf->mg_color_buffers[i].locked)
             continue;
-         if (dri2_surf->mg_back == NULL)
-            dri2_surf->mg_back = &dri2_surf->mg_color_buffers[i];
-         else if (dri2_surf->mg_back->dri_image == NULL)
-            dri2_surf->mg_back = &dri2_surf->mg_color_buffers[i];
+         if (dri2_drv_surf->mg_back == NULL)
+            dri2_drv_surf->mg_back = &dri2_drv_surf->mg_color_buffers[i];
+         else if (dri2_drv_surf->mg_back->dri_image == NULL)
+            dri2_drv_surf->mg_back = &dri2_drv_surf->mg_color_buffers[i];
       }
 
-      if (dri2_surf->mg_back)
+      if (dri2_drv_surf->mg_back)
          break;
-
-      /* If we don't have a buffer, then block on the server to release one for
-       * us, and try again. mg_display_dispatch_queue will process any pending
-       * events, however not all servers flush on issuing a buffer release
-       * event. So, we spam the server with roundtrips as they always cause a
-       * client flush.
-      if (mg_display_roundtrip_queue(dri2_dpy->mg_dpy,
-                                     dri2_surf->mg_queue) < 0)
-          return -1;
-       */
    }
 
-   if (dri2_surf->mg_back == NULL)
+   if (dri2_drv_surf->mg_back == NULL)
       return -1;
 
    use_flags = __DRI_IMAGE_USE_SHARE | __DRI_IMAGE_USE_BACKBUFFER;
 
    if (dri2_dpy->is_different_gpu &&
-       dri2_surf->mg_back->linear_copy == NULL) {
+       dri2_drv_surf->mg_back->linear_copy == NULL) {
       /* The LINEAR modifier should be a perfect alias of the LINEAR use
        * flag; try the new interface first before the old, then fall back. */
       if (dri2_dpy->image->base.version >= 15 &&
            dri2_dpy->image->createImageWithModifiers) {
          uint64_t linear_mod = DRM_FORMAT_MOD_LINEAR;
 
-         dri2_surf->mg_back->linear_copy =
+         dri2_drv_surf->mg_back->linear_copy =
             dri2_dpy->image->createImageWithModifiers(dri2_dpy->dri_screen,
-                                                      dri2_surf->base.Width,
-                                                      dri2_surf->base.Height,
+                                                      dri2_drv_surf->base.base.Width,
+                                                      dri2_drv_surf->base.base.Height,
                                                       linear_dri_image_format,
                                                       &linear_mod,
                                                       1,
                                                       NULL);
       } else {
-         dri2_surf->mg_back->linear_copy =
+         dri2_drv_surf->mg_back->linear_copy =
             dri2_dpy->image->createImage(dri2_dpy->dri_screen,
-                                         dri2_surf->base.Width,
-                                         dri2_surf->base.Height,
+                                         dri2_drv_surf->base.base.Width,
+                                         dri2_drv_surf->base.base.Height,
                                          linear_dri_image_format,
                                          use_flags |
                                          __DRI_IMAGE_USE_LINEAR,
                                          NULL);
       }
-      if (dri2_surf->mg_back->linear_copy == NULL)
+      if (dri2_drv_surf->mg_back->linear_copy == NULL)
           return -1;
    }
 
-   if (dri2_surf->mg_back->dri_image == NULL) {
+   if (dri2_drv_surf->mg_back->dri_image == NULL) {
       /* If our DRIImage implementation does not support
        * createImageWithModifiers, then fall back to the old createImage,
        * and hope it allocates an image which is acceptable to the winsys.
         */
       if (num_modifiers && dri2_dpy->image->base.version >= 15 &&
           dri2_dpy->image->createImageWithModifiers) {
-         dri2_surf->mg_back->dri_image =
+         dri2_drv_surf->mg_back->dri_image =
            dri2_dpy->image->createImageWithModifiers(dri2_dpy->dri_screen,
-                                                     dri2_surf->base.Width,
-                                                     dri2_surf->base.Height,
+                                                     dri2_drv_surf->base.base.Width,
+                                                     dri2_drv_surf->base.base.Height,
                                                      dri_image_format,
                                                      modifiers,
                                                      num_modifiers,
                                                      NULL);
       } else {
-         dri2_surf->mg_back->dri_image =
+         dri2_drv_surf->mg_back->dri_image =
             dri2_dpy->image->createImage(dri2_dpy->dri_screen,
-                                         dri2_surf->base.Width,
-                                         dri2_surf->base.Height,
+                                         dri2_drv_surf->base.base.Width,
+                                         dri2_drv_surf->base.base.Height,
                                          dri_image_format,
                                          dri2_dpy->is_different_gpu ?
                                               0 : use_flags,
                                          NULL);
       }
 
-      dri2_surf->mg_back->age = 0;
+      dri2_drv_surf->mg_back->age = 0;
    }
-   if (dri2_surf->mg_back->dri_image == NULL)
+
+   if (dri2_drv_surf->mg_back->dri_image == NULL)
       return -1;
 
-   dri2_surf->mg_back->locked = true;
+   dri2_drv_surf->mg_back->locked = true;
 
    return 0;
 }
 
 
 static void
-back_bo_to_dri_buffer(struct dri2_egl_surface *dri2_surf, __DRIbuffer *buffer)
+back_bo_to_dri_buffer(struct dri2_egl_drv_surface *dri2_drv_surf, __DRIbuffer *buffer)
 {
    struct dri2_egl_display *dri2_dpy =
-      dri2_egl_display(dri2_surf->base.Resource.Display);
+      dri2_egl_display(dri2_drv_surf->base.base.Resource.Display);
    __DRIimage *image;
    int name, pitch;
 
-   image = dri2_surf->mg_back->dri_image;
+   image = dri2_drv_surf->mg_back->dri_image;
 
    dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_NAME, &name);
    dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &pitch);
@@ -1148,40 +1142,24 @@ back_bo_to_dri_buffer(struct dri2_egl_surface *dri2_surf, __DRIbuffer *buffer)
 }
 
 static int
-update_buffers(struct dri2_egl_surface *dri2_surf)
+update_buffers(struct dri2_egl_drv_surface *dri2_drv_surf)
 {
    struct dri2_egl_display *dri2_dpy =
-      dri2_egl_display(dri2_surf->base.Resource.Display);
+      dri2_egl_display(dri2_drv_surf->base.base.Resource.Display);
    RECT rc_win;
-
-#if 0 // VW
-   if (dri2_surf->base.Width != dri2_surf->mg_win->width ||
-       dri2_surf->base.Height != dri2_surf->mg_win->height) {
-
-      dri2_surf->base.Width  = dri2_surf->mg_win->width;
-      dri2_surf->base.Height = dri2_surf->mg_win->height;
-      dri2_surf->dx = dri2_surf->mg_win->dx;
-      dri2_surf->dy = dri2_surf->mg_win->dy;
-   }
-
-   if (dri2_surf->base.Width != dri2_surf->mg_win->attached_width ||
-       dri2_surf->base.Height != dri2_surf->mg_win->attached_height) {
-      dri2_minigui_release_buffers(dri2_surf);
-   }
-#endif
 
    _DBG_PRINTF("called\n");
 
-   GetClientRect (dri2_surf->mg_win, &rc_win);
-   if (dri2_surf->base.Width != RECTW(rc_win) ||
-       dri2_surf->base.Height != RECTH(rc_win)) {
+   GetClientRect (dri2_drv_surf->mg_win, &rc_win);
+   if (dri2_drv_surf->base.base.Width != RECTW(rc_win) ||
+       dri2_drv_surf->base.base.Height != RECTH(rc_win)) {
 
-      dri2_surf->base.Width  = RECTW(rc_win);
-      dri2_surf->base.Height = RECTH(rc_win);
-      dri2_minigui_release_buffers(dri2_surf);
+      dri2_drv_surf->base.base.Width  = RECTW(rc_win);
+      dri2_drv_surf->base.base.Height = RECTH(rc_win);
+      dri2_minigui_release_buffers(dri2_drv_surf);
    }
 
-   if (get_back_bo(dri2_surf) < 0) {
+   if (get_back_bo(dri2_drv_surf) < 0) {
       _eglError(EGL_BAD_ALLOC, "failed to allocate color buffer");
       return -1;
    }
@@ -1189,16 +1167,16 @@ update_buffers(struct dri2_egl_surface *dri2_surf)
    /* If we have an extra unlocked buffer at this point, we had to do triple
     * buffering for a while, but now can go back to just double buffering.
     * That means we can free any unlocked buffer now. */
-   for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++) {
-      if (!dri2_surf->mg_color_buffers[i].locked &&
-          dri2_surf->mg_color_buffers[i].memdc) {
-         dri2_minigui_destroy_memdc(dri2_surf->mg_color_buffers[i].memdc);
-         dri2_dpy->image->destroyImage(dri2_surf->mg_color_buffers[i].dri_image);
+   for (int i = 0; i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers); i++) {
+      if (!dri2_drv_surf->mg_color_buffers[i].locked &&
+          dri2_drv_surf->mg_color_buffers[i].memdc) {
+         dri2_minigui_destroy_memdc(dri2_drv_surf->mg_color_buffers[i].memdc);
+         dri2_dpy->image->destroyImage(dri2_drv_surf->mg_color_buffers[i].dri_image);
          if (dri2_dpy->is_different_gpu)
-            dri2_dpy->image->destroyImage(dri2_surf->mg_color_buffers[i].linear_copy);
-         dri2_surf->mg_color_buffers[i].memdc = NULL;
-         dri2_surf->mg_color_buffers[i].dri_image = NULL;
-         dri2_surf->mg_color_buffers[i].linear_copy = NULL;
+            dri2_dpy->image->destroyImage(dri2_drv_surf->mg_color_buffers[i].linear_copy);
+         dri2_drv_surf->mg_color_buffers[i].memdc = NULL;
+         dri2_drv_surf->mg_color_buffers[i].dri_image = NULL;
+         dri2_drv_surf->mg_color_buffers[i].linear_copy = NULL;
       }
    }
 
@@ -1206,12 +1184,12 @@ update_buffers(struct dri2_egl_surface *dri2_surf)
 }
 
 static int
-update_buffers_if_needed(struct dri2_egl_surface *dri2_surf)
+update_buffers_if_needed(struct dri2_egl_drv_surface *dri2_drv_surf)
 {
-   if (dri2_surf->mg_back != NULL)
+   if (dri2_drv_surf->mg_back != NULL)
       return 0;
 
-   return update_buffers(dri2_surf);
+   return update_buffers(dri2_drv_surf);
 }
 
 static __DRIbuffer *
@@ -1220,10 +1198,10 @@ dri2_minigui_get_buffers_with_format(__DRIdrawable * driDrawable,
                                 unsigned int *attachments, int count,
                                 int *out_count, void *loaderPrivate)
 {
-   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   struct dri2_egl_drv_surface *dri2_drv_surf = loaderPrivate;
    int i, j;
 
-   if (update_buffers(dri2_surf) < 0)
+   if (update_buffers(dri2_drv_surf) < 0)
       return NULL;
 
    for (i = 0, j = 0; i < 2 * count; i += 2, j++) {
@@ -1231,17 +1209,17 @@ dri2_minigui_get_buffers_with_format(__DRIdrawable * driDrawable,
 
       switch (attachments[i]) {
       case __DRI_BUFFER_BACK_LEFT:
-         back_bo_to_dri_buffer(dri2_surf, &dri2_surf->buffers[j]);
+         back_bo_to_dri_buffer(dri2_drv_surf, &dri2_drv_surf->base.buffers[j]);
          break;
       default:
-         local = dri2_egl_surface_alloc_local_buffer(dri2_surf, attachments[i],
+         local = dri2_egl_surface_alloc_local_buffer(&dri2_drv_surf->base, attachments[i],
                                                      attachments[i + 1]);
 
          if (!local) {
             _eglError(EGL_BAD_ALLOC, "failed to allocate local buffer");
             return NULL;
          }
-         dri2_surf->buffers[j] = *local;
+         dri2_drv_surf->base.buffers[j] = *local;
          break;
       }
    }
@@ -1250,10 +1228,10 @@ dri2_minigui_get_buffers_with_format(__DRIdrawable * driDrawable,
    if (j == 0)
       return NULL;
 
-   *width = dri2_surf->base.Width;
-   *height = dri2_surf->base.Height;
+   *width = dri2_drv_surf->base.base.Width;
+   *height = dri2_drv_surf->base.base.Height;
 
-   return dri2_surf->buffers;
+   return dri2_drv_surf->base.buffers;
 }
 
 static __DRIbuffer *
@@ -1262,10 +1240,10 @@ dri2_minigui_get_buffers(__DRIdrawable * driDrawable,
                     unsigned int *attachments, int count,
                     int *out_count, void *loaderPrivate)
 {
-   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   struct dri2_egl_drv_surface *dri2_drv_surf = loaderPrivate;
    unsigned int *attachments_with_format;
    __DRIbuffer *buffer;
-   int visual_idx = dri2_minigui_visual_idx_from_fourcc(dri2_surf->mg_format);
+   int visual_idx = dri2_minigui_visual_idx_from_fourcc(dri2_drv_surf->mg_format);
 
    if (visual_idx == -1)
       return NULL;
@@ -1300,14 +1278,14 @@ image_get_buffers(__DRIdrawable *driDrawable,
                   uint32_t buffer_mask,
                   struct __DRIimageList *buffers)
 {
-   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   struct dri2_egl_drv_surface *dri2_drv_surf = loaderPrivate;
 
    _DBG_PRINTF("called\n");
-   if (update_buffers(dri2_surf) < 0)
+   if (update_buffers(dri2_drv_surf) < 0)
       return 0;
 
    buffers->image_mask = __DRI_IMAGE_BUFFER_BACK;
-   buffers->back = dri2_surf->mg_back->dri_image;
+   buffers->back = dri2_drv_surf->mg_back->dri_image;
 
    return 1;
 }
@@ -1370,6 +1348,8 @@ static EGLBoolean
 dri2_minigui_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *disp)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   struct dri2_egl_drv_display *dri2_drv_dpy =
+        (struct dri2_egl_drv_display *)dri2_dpy;
    unsigned int format_count[ARRAY_SIZE(dri2_mg_visuals)] = { 0 };
    unsigned int count = 0;
    bool assigned;
@@ -1382,7 +1362,7 @@ dri2_minigui_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *disp)
       for (unsigned j = 0; j < ARRAY_SIZE(dri2_mg_visuals); j++) {
          struct dri2_egl_config *dri2_conf;
 
-         if (!BITSET_TEST(dri2_dpy->mg_formats, j))
+         if (!BITSET_TEST(dri2_drv_dpy->mg_formats, j))
             continue;
 
          dri2_conf = dri2_add_config(disp, dri2_dpy->driver_configs[i],
@@ -1410,7 +1390,7 @@ dri2_minigui_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *disp)
          alt_dri_image_format = dri2_mg_visuals[c].alt_dri_image_format;
          s = dri2_minigui_visual_idx_from_dri_image_format(alt_dri_image_format);
 
-         if (s == -1 || !BITSET_TEST(dri2_dpy->mg_formats, s))
+         if (s == -1 || !BITSET_TEST(dri2_drv_dpy->mg_formats, s))
             continue;
 
          /* Visual s works for the Wayland server, and c can be converted into s
@@ -1469,7 +1449,7 @@ get_fourcc(struct dri2_egl_display *dri2_dpy,
 }
 
 static HDC
-create_minigui_buffer(struct dri2_egl_display *dri2_dpy,
+create_minigui_buffer(struct dri2_egl_drv_display *dri2_drv_dpy,
                  struct dri2_egl_surface *dri2_surf,
                  __DRIimage *image)
 {
@@ -1477,132 +1457,39 @@ create_minigui_buffer(struct dri2_egl_display *dri2_dpy,
    EGLBoolean query;
    int width, height, fourcc, num_planes;
 
-   query = dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_WIDTH, &width);
-   query &= dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_HEIGHT, &height);
-   query &= get_fourcc(dri2_dpy, image, &fourcc);
+   query = dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_WIDTH, &width);
+   query &= dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_HEIGHT, &height);
+   query &= get_fourcc(&dri2_drv_dpy->base, image, &fourcc);
    if (!query)
       return NULL;
 
-   query = dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_NUM_PLANES,
+   query = dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_NUM_PLANES,
                                        &num_planes);
    if (!query)
       num_planes = 1;
 
-#if 0 // VW
-   uint64_t modifier = DRM_FORMAT_MOD_INVALID;
-
-   if (dri2_dpy->image->base.version >= 15) {
-      int mod_hi, mod_lo;
-
-      query = dri2_dpy->image->queryImage(image,
-                                          __DRI_IMAGE_ATTRIB_MODIFIER_UPPER,
-                                          &mod_hi);
-      query &= dri2_dpy->image->queryImage(image,
-                                           __DRI_IMAGE_ATTRIB_MODIFIER_LOWER,
-                                           &mod_lo);
-      if (query) {
-         modifier = combine_u32_into_u64(mod_hi, mod_lo);
-      }
-   }
-
-   if (dri2_dpy->wl_dmabuf && modifier != DRM_FORMAT_MOD_INVALID) {
-      struct zwp_linux_buffer_params_v1 *params;
-      int i;
-
-      /* We don't need a wrapper for wl_dmabuf objects, because we have to
-       * create the intermediate params object; we can set the queue on this,
-       * and the wl_buffer inherits it race-free. */
-      params = zwp_linux_dmabuf_v1_create_params(dri2_dpy->wl_dmabuf);
-      if (dri2_surf)
-         wl_proxy_set_queue((struct wl_proxy *) params, dri2_surf->wl_queue);
-
-      for (i = 0; i < num_planes; i++) {
-         __DRIimage *p_image;
-         int stride, offset;
-         int fd = -1;
-
-         p_image = dri2_dpy->image->fromPlanar(image, i, NULL);
-         if (!p_image) {
-            assert(i == 0);
-            p_image = image;
-         }
-
-         query = dri2_dpy->image->queryImage(p_image,
-                                             __DRI_IMAGE_ATTRIB_FD,
-                                             &fd);
-         query &= dri2_dpy->image->queryImage(p_image,
-                                              __DRI_IMAGE_ATTRIB_STRIDE,
-                                              &stride);
-         query &= dri2_dpy->image->queryImage(p_image,
-                                              __DRI_IMAGE_ATTRIB_OFFSET,
-                                              &offset);
-         if (image != p_image)
-            dri2_dpy->image->destroyImage(p_image);
-
-         if (!query) {
-            if (fd >= 0)
-               close(fd);
-            zwp_linux_buffer_params_v1_destroy(params);
-            return NULL;
-         }
-
-         zwp_linux_buffer_params_v1_add(params, fd, i, offset, stride,
-                                        modifier >> 32, modifier & 0xffffffff);
-         close(fd);
-      }
-
-      ret = zwp_linux_buffer_params_v1_create_immed(params, width, height,
-                                                    fourcc, 0);
-      zwp_linux_buffer_params_v1_destroy(params);
-   } else if (dri2_dpy->capabilities & WL_DRM_CAPABILITY_PRIME) {
-      struct wl_drm *wl_drm =
-         dri2_surf ? dri2_surf->wl_drm_wrapper : dri2_dpy->wl_drm;
-      int fd, stride;
-
-      if (num_planes > 1)
-         return NULL;
-
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_FD, &fd);
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
-      ret = wl_drm_create_prime_buffer(wl_drm, fd, width, height, fourcc, 0,
-                                       stride, 0, 0, 0, 0);
-      close(fd);
-   } else {
-      struct wl_drm *wl_drm =
-         dri2_surf ? dri2_surf->wl_drm_wrapper : dri2_dpy->wl_drm;
-      int name, stride;
-
-      if (num_planes > 1)
-         return NULL;
-
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_NAME, &name);
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
-      ret = wl_drm_create_buffer(wl_drm, name, width, height, stride, fourcc);
-   }
-#endif
-
-   if (dri2_dpy->mg_capabilities & MG_DRM_CAPABILITY_PRIME) {
+   if (dri2_drv_dpy->mg_capabilities & MG_DRM_CAPABILITY_PRIME) {
       int fd, stride;
 
       if (num_planes > 1)
          return NULL;
 
       // FIXME: no size info
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_FD, &fd);
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
-      ret = drmCreateDCFromPrimeFd(dri2_dpy->mg_video, fd, 0, fourcc,
+      dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_FD, &fd);
+      dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
+      ret = drmCreateDCFromPrimeFd(dri2_drv_dpy->mg_video, fd, 0, fourcc,
                                         width, height, stride);
       close(fd);
    }
-   else if (dri2_dpy->mg_capabilities & MG_DRM_CAPABILITY_NAME) {
+   else if (dri2_drv_dpy->mg_capabilities & MG_DRM_CAPABILITY_NAME) {
       int name, stride;
 
       if (num_planes > 1)
          return NULL;
 
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_NAME, &name);
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
-      ret = drmCreateDCFromName(dri2_dpy->mg_video, name, fourcc,
+      dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_NAME, &name);
+      dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
+      ret = drmCreateDCFromName(dri2_drv_dpy->mg_video, name, fourcc,
                 width, height, stride);
    }
    else {
@@ -1613,9 +1500,9 @@ create_minigui_buffer(struct dri2_egl_display *dri2_dpy,
          return NULL;
 
       // FIXME: no size info
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_HANDLE, &handle);
-      dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
-      ret = drmCreateDCFromHandle(dri2_dpy->mg_video, handle, 0, fourcc,
+      dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_HANDLE, &handle);
+      dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
+      ret = drmCreateDCFromHandle(dri2_drv_dpy->mg_video, handle, 0, fourcc,
                 width, height, stride);
    }
 
@@ -1623,20 +1510,20 @@ create_minigui_buffer(struct dri2_egl_display *dri2_dpy,
 }
 
 static EGLBoolean
-clip_minigui_buffer(struct dri2_egl_surface *dri2_surf,
+clip_minigui_buffer(struct dri2_egl_drv_surface *dri2_drv_surf,
             const EGLint *rects, EGLint n_rects)
 {
    assert(n_rects > 0);
 
-   SelectClipRect(dri2_surf->mg_priv_cdc, NULL);
+   SelectClipRect(dri2_drv_surf->mg_priv_cdc, NULL);
 
    for (int i = 0; i < n_rects; i++) {
       const int *rect = &rects[i * 4];
-      RECT clip_rc = {rect[0], dri2_surf->base.Height - rect[1] - rect[3]};
+      RECT clip_rc = {rect[0], dri2_drv_surf->base.base.Height - rect[1] - rect[3]};
       clip_rc.right = clip_rc.left + rect[2];
       clip_rc.bottom = clip_rc.top + rect[3];
 
-      IncludeClipRect(dri2_surf->mg_priv_cdc, &clip_rc);
+      IncludeClipRect(dri2_drv_surf->mg_priv_cdc, &clip_rc);
    }
 
    return EGL_TRUE;
@@ -1653,53 +1540,41 @@ dri2_minigui_swap_buffers_with_damage(_EGLDriver *drv,
                                  EGLint n_rects)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   struct dri2_egl_drv_display *dri2_drv_dpy =
+        (struct dri2_egl_drv_display *)dri2_dpy;
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
+   struct dri2_egl_drv_surface *dri2_drv_surf =
+        (struct dri2_egl_drv_surface *)dri2_surf;
 
-#if 0 // VW
-   while (dri2_surf->throttle_callback != NULL)
-      if (wl_display_dispatch_queue(dri2_dpy->wl_dpy,
-                                    dri2_surf->wl_queue) == -1)
-         return -1;
-#endif
-
-   for (int i = 0; i < ARRAY_SIZE(dri2_surf->mg_color_buffers); i++)
-      if (dri2_surf->mg_color_buffers[i].age > 0)
-         dri2_surf->mg_color_buffers[i].age++;
+   for (int i = 0; i < ARRAY_SIZE(dri2_drv_surf->mg_color_buffers); i++)
+      if (dri2_drv_surf->mg_color_buffers[i].age > 0)
+         dri2_drv_surf->mg_color_buffers[i].age++;
 
    /* Make sure we have a back buffer in case we're swapping without ever
     * rendering. */
-   if (update_buffers_if_needed(dri2_surf) < 0)
+   if (update_buffers_if_needed(dri2_drv_surf) < 0)
       return _eglError(EGL_BAD_ALLOC, "dri2_swap_buffers");
 
-#if 0 // VW
-   if (surf->SwapInterval > 0) {
-      dri2_surf->throttle_callback =
-         wl_surface_frame(dri2_surf->wl_surface_wrapper);
-      wl_callback_add_listener(dri2_surf->throttle_callback,
-                               &throttle_listener, dri2_surf);
-   }
-#endif
+   dri2_drv_surf->mg_back->age = 1;
+   dri2_drv_surf->mg_current = dri2_drv_surf->mg_back;
+   dri2_drv_surf->mg_back = NULL;
 
-   dri2_surf->mg_back->age = 1;
-   dri2_surf->mg_current = dri2_surf->mg_back;
-   dri2_surf->mg_back = NULL;
-
-   if (!dri2_surf->mg_current->memdc) {
+   if (!dri2_drv_surf->mg_current->memdc) {
       __DRIimage *image;
 
       if (dri2_dpy->is_different_gpu)
-         image = dri2_surf->mg_current->linear_copy;
+         image = dri2_drv_surf->mg_current->linear_copy;
       else
-         image = dri2_surf->mg_current->dri_image;
+         image = dri2_drv_surf->mg_current->dri_image;
 
-      dri2_surf->mg_current->memdc =
-         create_minigui_buffer(dri2_dpy, dri2_surf, image);
+      dri2_drv_surf->mg_current->memdc =
+         create_minigui_buffer(dri2_drv_dpy, dri2_surf, image);
 
-      dri2_surf->mg_current->release = false;
+      dri2_drv_surf->mg_current->release = false;
    }
 
    if (n_rects > 0 && rects) {
-      clip_minigui_buffer(dri2_surf, rects, n_rects);
+      clip_minigui_buffer(dri2_drv_surf, rects, n_rects);
    }
 
 #if 0 // VW
@@ -1720,26 +1595,10 @@ dri2_minigui_swap_buffers_with_damage(_EGLDriver *drv,
    if (dri2_dpy->flush)
       dri2_dpy->flush->invalidate(dri2_surf->dri_drawable);
 
-   BitBlt(dri2_surf->mg_current->memdc, 0, 0, 0, 0,
-            dri2_surf->mg_priv_cdc, 0, 0, 0);
+   BitBlt(dri2_drv_surf->mg_current->memdc, 0, 0, 0, 0,
+            dri2_drv_surf->mg_priv_cdc, 0, 0, 0);
 
-   dri2_minigui_release_buffer(dri2_surf, dri2_surf->mg_current->memdc);
-
-#if 0 // VW
-   wl_surface_commit(dri2_surf->wl_surface_wrapper);
-
-   /* If we're not waiting for a frame callback then we'll at least throttle
-    * to a sync callback so that we always give a chance for the compositor to
-    * handle the commit and send a release event before checking for a free
-    * buffer */
-   if (dri2_surf->throttle_callback == NULL) {
-      dri2_surf->throttle_callback = wl_display_sync(dri2_surf->wl_dpy_wrapper);
-      wl_callback_add_listener(dri2_surf->throttle_callback,
-                               &throttle_listener, dri2_surf);
-   }
-
-   wl_display_flush(dri2_dpy->wl_dpy);
-#endif
+   dri2_minigui_release_buffer(dri2_drv_surf, dri2_drv_surf->mg_current->memdc);
 
    return EGL_TRUE;
 }
@@ -1759,10 +1618,8 @@ dri2_minigui_swrast_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp,
 
    dri2_dpy->core->swapBuffers(dri2_surf->dri_drawable);
 
-   _DBG_PRINTF("called\n");
-
 #if 0
-   if (dri2_surf->mg_win)
+   if (dri2_drv_surf->mg_win)
       return dri2_minigui_swap_buffers_with_damage(drv, disp, surf, NULL, 0);
 #endif
 
@@ -1779,12 +1636,14 @@ dri2_create_image_khr_pixmap(_EGLDisplay *disp, _EGLContext *ctx,
    return NULL;
 #else
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   struct dri2_egl_drv_display *dri2_drv_dpy =
+        (struct dri2_egl_drv_display *)dri2_dpy;
    struct dri2_egl_image *dri2_img;
    DrmSurfaceInfo info;
 
    (void) ctx;
 
-   if (!drmGetSurfaceInfo(dri2_dpy->mg_video, (HDC)buffer, &info)
+   if (!drmGetSurfaceInfo(dri2_drv_dpy->mg_video, (HDC)buffer, &info)
         || info.name == 0) {
       _eglError(EGL_BAD_PARAMETER,
             "dri2_create_image_khr: unsupported pixmap type (bad DRM surface)");
@@ -1883,11 +1742,13 @@ dri2_initialize_minigui_swrast(_EGLDriver *drv, _EGLDisplay *disp)
 {
    _EGLDevice *dev;
    struct dri2_egl_display *dri2_dpy;
+   struct dri2_egl_drv_display *dri2_drv_dpy;
 
-   dri2_dpy = calloc(1, sizeof *dri2_dpy);
+   dri2_dpy = calloc(1, sizeof *dri2_drv_dpy);
    if (!dri2_dpy)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
 
+   dri2_drv_dpy = (struct dri2_egl_drv_display *)dri2_dpy;
    disp->DriverData = (void *)dri2_dpy;
 
    dri2_dpy->fd = -1;
@@ -1900,12 +1761,12 @@ dri2_initialize_minigui_swrast(_EGLDriver *drv, _EGLDisplay *disp)
    disp->Device = dev;
 
    // VW: only ARGB8888, XRGB8888, and RGB565 supported
-   BITSET_SET(dri2_dpy->mg_formats, 4);
-   BITSET_SET(dri2_dpy->mg_formats, 5);
-   BITSET_SET(dri2_dpy->mg_formats, 6);
+   BITSET_SET(dri2_drv_dpy->mg_formats, 4);
+   BITSET_SET(dri2_drv_dpy->mg_formats, 5);
+   BITSET_SET(dri2_drv_dpy->mg_formats, 6);
 
 #if 0
-   if (!BITSET_TEST_RANGE(dri2_dpy->mg_formats, 0, EGL_DRI2_MAX_FORMATS)) {
+   if (!BITSET_TEST_RANGE(dri2_drv_dpy->mg_formats, 0, EGL_DRI2_MAX_FORMATS)) {
       _DBG_PRINTF("BITSET_TEST_RANGE failed\n");
       goto cleanup;
    }
@@ -1932,12 +1793,12 @@ dri2_initialize_minigui_swrast(_EGLDriver *drv, _EGLDisplay *disp)
    if (!dri2_minigui_add_configs_for_visuals(drv, disp))
       goto cleanup;
 
-   dri2_dpy->mg_modifiers =
-      calloc(ARRAY_SIZE(dri2_mg_visuals), sizeof(*dri2_dpy->mg_modifiers));
-   if (!dri2_dpy->mg_modifiers)
+   dri2_drv_dpy->mg_modifiers =
+      calloc(ARRAY_SIZE(dri2_mg_visuals), sizeof(*dri2_drv_dpy->mg_modifiers));
+   if (!dri2_drv_dpy->mg_modifiers)
       goto cleanup;
    for (int i = 0; i < ARRAY_SIZE(dri2_mg_visuals); i++) {
-      if (!u_vector_init(&dri2_dpy->mg_modifiers[i], sizeof(uint64_t), 32))
+      if (!u_vector_init(&dri2_drv_dpy->mg_modifiers[i], sizeof(uint64_t), 32))
          goto cleanup;
    }
 
@@ -2010,26 +1871,28 @@ dri2_initialize_minigui_dri2(_EGLDriver *drv, _EGLDisplay *disp)
 {
    _EGLDevice *dev;
    struct dri2_egl_display *dri2_dpy;
+   struct dri2_egl_drv_display *dri2_drv_dpy;
 
-   dri2_dpy = calloc(1, sizeof *dri2_dpy);
+   dri2_dpy = calloc(1, sizeof *dri2_drv_dpy);
    if (!dri2_dpy)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
 
+   dri2_drv_dpy = (struct dri2_egl_drv_display *)dri2_dpy;
    disp->DriverData = (void *)dri2_dpy;
 
    if (disp->PlatformDisplay == NULL) {
-      dri2_dpy->mg_video = GetVideoHandle(HDC_SCREEN);
-      if (dri2_dpy->mg_video == NULL) {
+      dri2_drv_dpy->mg_video = GetVideoHandle(HDC_SCREEN);
+      if (dri2_drv_dpy->mg_video == NULL) {
          _eglError(EGL_BAD_DISPLAY, "DRI2: failed to get MiniGUI video handle");
          goto cleanup;
       }
    } else {
-      dri2_dpy->mg_video = disp->PlatformDisplay;
+      dri2_drv_dpy->mg_video = disp->PlatformDisplay;
    }
 
    dri2_dpy->fd = -1;
 #ifdef _MGGAL_DRM
-   dri2_dpy->fd = drmGetDeviceFD(dri2_dpy->mg_video);
+   dri2_dpy->fd = drmGetDeviceFD(dri2_drv_dpy->mg_video);
 #endif
    if(dri2_dpy->fd < 0) {
       _eglError(EGL_BAD_DISPLAY, "DRI2: not a MiniGUI DRM engine");
@@ -2061,12 +1924,12 @@ dri2_initialize_minigui_dri2(_EGLDriver *drv, _EGLDisplay *disp)
    if (!dri2_setup_extensions(disp))
       goto cleanup;
 
-   dri2_dpy->mg_modifiers =
-      calloc(ARRAY_SIZE(dri2_mg_visuals), sizeof(*dri2_dpy->mg_modifiers));
-   if (!dri2_dpy->mg_modifiers)
+   dri2_drv_dpy->mg_modifiers =
+      calloc(ARRAY_SIZE(dri2_mg_visuals), sizeof(*dri2_drv_dpy->mg_modifiers));
+   if (!dri2_drv_dpy->mg_modifiers)
       goto cleanup;
    for (int i = 0; i < ARRAY_SIZE(dri2_mg_visuals); i++) {
-      if (!u_vector_init(&dri2_dpy->mg_modifiers[i], sizeof(uint64_t), 32))
+      if (!u_vector_init(&dri2_drv_dpy->mg_modifiers[i], sizeof(uint64_t), 32))
          goto cleanup;
    }
 
@@ -2174,8 +2037,11 @@ dri2_initialize_minigui(_EGLDriver *drv, _EGLDisplay *disp)
 void
 dri2_teardown_minigui(struct dri2_egl_display *dri2_dpy)
 {
-   for (int i = 0; dri2_dpy->mg_modifiers && i < ARRAY_SIZE(dri2_mg_visuals); i++)
-      u_vector_finish(&dri2_dpy->mg_modifiers[i]);
-   free(dri2_dpy->mg_modifiers);
+   struct dri2_egl_drv_display *dri2_drv_dpy =
+        (struct dri2_egl_drv_display *)dri2_dpy;
+
+   for (int i = 0; dri2_drv_dpy->mg_modifiers && i < ARRAY_SIZE(dri2_mg_visuals); i++)
+      u_vector_finish(&dri2_drv_dpy->mg_modifiers[i]);
+   free(dri2_drv_dpy->mg_modifiers);
 }
 

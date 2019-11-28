@@ -279,7 +279,7 @@ endif
 _platforms = get_option('platforms')
 if _platforms.contains('auto')
   if have_minigui
-    _platforms = ['minigui', 'drm', 'surfaceless']
+    _platforms = ['x11', 'minigui', 'drm', 'surfaceless']
   elif system_has_kms_drm
     _platforms = ['x11', 'wayland', 'drm', 'surfaceless']
   elif ['darwin', 'windows', 'cygwin'].contains(host_machine.system())
@@ -320,9 +320,7 @@ endif
 
 with_glx = get_option('glx')
 if with_glx == 'auto'
-  if with_platform_minigui
-    with_glx = 'disabled'
-  elif with_dri
+  if with_dri
     with_glx = 'dri'
   elif with_platform_haiku
     with_glx = 'disabled'
@@ -426,6 +424,9 @@ if with_glvnd
     error('Cannot build glvnd support for GLX that is not DRI based.')
   elif with_glx == 'disabled' and not with_egl
     error('glvnd requires DRI based GLX and/or EGL')
+  endif
+  if get_option('gl-lib-suffix') != ''
+    error('''GL lib suffix can't be used with libglvnd''')
   endif
   if get_option('egl-lib-suffix') != ''
     error('''EGL lib suffix can't be used with libglvnd''')

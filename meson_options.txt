@@ -339,6 +339,11 @@ option(
   value : false,
   description : 'Allow work-in-progress freedreno vulkan driver to be enabled',
 )
+option('gl-lib-suffix',
+  type : 'string',
+  value : '',
+  description : 'Suffix to append to GL library name.  Default: none.'
+)
 option('egl-lib-suffix',
   type : 'string',
   value : '',

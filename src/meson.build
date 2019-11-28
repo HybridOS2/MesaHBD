@@ -112,7 +112,7 @@ if with_glx != 'disabled' and (not with_glvnd or not glvnd_has_headers_and_pc_fi
   # should be safe here
   # TODO: in the glvnd case glvnd itself should really be providing this.
   if not glvnd_has_headers_and_pc_files
-    _gl = '-L${libdir} -lGL'
+    _gl = '-L${libdir} -lGL' + get_option('gl-lib-suffix')
   else
     _gl = libgl
   endif

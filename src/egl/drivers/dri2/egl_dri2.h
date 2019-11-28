@@ -69,13 +69,6 @@ struct zwp_linux_dmabuf_v1;
 #include <hardware/gralloc.h>
 #endif /* HAVE_ANDROID_PLATFORM */
 
-#ifdef HAVE_MINIGUI_PLATFORM
-#include <minigui/common.h>
-#include <minigui/minigui.h>
-#include <minigui/gdi.h>
-#include <minigui/window.h>
-#endif /* HAVE_MINIGUI_PLATFORM */
-
 #include "eglconfig.h"
 #include "eglcontext.h"
 #include "egldevice.h"
@@ -166,11 +159,6 @@ struct dri2_egl_display_vtbl {
                                   bool mode);
 };
 
-#ifdef HAVE_MINIGUI_PLATFORM
-#define MG_DRM_CAPABILITY_NAME      0x01
-#define MG_DRM_CAPABILITY_PRIME     0x02
-#endif
-
 struct dri2_egl_display
 {
    const struct dri2_egl_display_vtbl *vtbl;
@@ -210,14 +198,16 @@ struct dri2_egl_display
    int                       min_swap_interval;
    int                       max_swap_interval;
    int                       default_swap_interval;
+   bool                      is_render_node;
+   bool                      is_different_gpu;
+
+   char                     *driver_name;
+   const __DRIextension    **loader_extensions;
+   const __DRIextension    **driver_extensions;
+
 #ifdef HAVE_DRM_PLATFORM
    struct gbm_dri_device    *gbm_dri;
 #endif
-
-   char                     *driver_name;
-
-   const __DRIextension    **loader_extensions;
-   const __DRIextension    **driver_extensions;
 
 #ifdef HAVE_X11_PLATFORM
    xcb_connection_t         *conn;
@@ -250,18 +240,8 @@ struct dri2_egl_display
 #endif
 
 #ifdef HAVE_ANDROID_PLATFORM
-   const gralloc_module_t *gralloc;
+   const gralloc_module_t   *gralloc;
 #endif
-
-#ifdef HAVE_MINIGUI_PLATFORM
-   GHANDLE                   mg_video;
-   struct u_vector          *mg_modifiers;
-   BITSET_DECLARE(mg_formats, EGL_DRI2_MAX_FORMATS);
-   uint32_t                  mg_capabilities;
-#endif
-
-   bool                      is_render_node;
-   bool                      is_different_gpu;
 };
 
 struct dri2_egl_context
@@ -279,19 +259,21 @@ enum wayland_buffer_type {
 };
 #endif
 
-#ifdef HAVE_MINIGUI_PLATFORM
-struct dri2_egl_surface;
-
-typedef void (*CB_RESIZED)(HWND, struct dri2_egl_surface* surf, const RECT* rc_client);
-typedef void (*CB_DESTROY)(HWND, struct dri2_egl_surface* surf);
-#endif
-
 struct dri2_egl_surface
 {
    _EGLSurface          base;
    __DRIdrawable       *dri_drawable;
    __DRIbuffer          buffers[5];
    bool                 have_fake_front;
+   int                  out_fence_fd;
+   bool                 enable_out_fence;
+
+   /* EGL-owned buffers */
+   __DRIbuffer           *local_buffers[__DRI_BUFFER_COUNT];
+
+   /* surfaceless and device */
+   __DRIimage           *front;
+   unsigned int         visual;
 
 #ifdef HAVE_X11_PLATFORM
    xcb_drawable_t       drawable;
@@ -317,9 +299,6 @@ struct dri2_egl_surface
 #ifdef HAVE_DRM_PLATFORM
    struct gbm_dri_surface *gbm_surf;
 #endif
-
-   /* EGL-owned buffers */
-   __DRIbuffer           *local_buffers[__DRI_BUFFER_COUNT];
 
 #if defined(HAVE_WAYLAND_PLATFORM) || defined(HAVE_DRM_PLATFORM)
    struct {
@@ -357,41 +336,6 @@ struct dri2_egl_surface
       int age;
    } *color_buffers, *back;
 #endif
-
-   /* surfaceless and device */
-   __DRIimage           *front;
-   unsigned int         visual;
-
-#ifdef HAVE_MINIGUI_PLATFORM
-   HWND        mg_win;
-   WNDPROC     mg_old_proc;
-   CB_RESIZED  mg_cb_resized;
-   CB_DESTROY  mg_cb_destroy;
-   HDC         mg_priv_cdc;
-
-   HDC         mg_pixmap;
-   HDC         mg_swap_drawable;
-
-   __DRIimage *mg_dri_image_front;
-   __DRIimage *mg_dri_image_back;
-   int         mg_format;
-
-   struct {
-      HDC               memdc;
-      bool              release;
-      __DRIimage       *dri_image;
-      /* for is_different_gpu case. NULL else */
-      __DRIimage       *linear_copy;
-      /* for swrast */
-      void             *data;
-      int               data_size;
-      bool              locked;
-      int               age;
-   } mg_color_buffers[4], *mg_back, *mg_current;
-#endif
-
-   int out_fence_fd;
-   EGLBoolean enable_out_fence;
 };
 
 struct dri2_egl_config

@@ -118,7 +118,7 @@ elif with_dri_platform == 'windows'
 endif
 
 if not with_glvnd
-  gl_lib_name = 'GL'
+  gl_lib_name = 'GL' + get_option('gl-lib-suffix')
   gl_lib_version = '1.2.0'
 else
   gl_lib_name = 'GLX_mesa'
