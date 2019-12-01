@@ -419,7 +419,7 @@ dri2_minigui_swrast_allocate_buffer(struct dri2_egl_drv_surface *dri2_drv_surf,
    *size = size_map;
    *dc = memdc;
 
-   _DBG_PRINTF("a software memdc created: w(%d), h(%d), stride(%d), visual(%d)\n",
+   _eglLog(_EGL_DEBUG, "a software memdc created: w(%d), h(%d), stride(%d), visual(%d)\n",
             w, h, stride, visual_idx);
 
    return EGL_TRUE;
@@ -1466,17 +1466,22 @@ create_minigui_buffer(struct dri2_egl_drv_display *dri2_drv_dpy,
    }
    else {
 
-      int handle, stride;
+      int handle, stride, size_map, offset;
 
-      // FIXME: no size info
       dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_HANDLE, &handle);
       dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
-      ret = drmCreateDCFromHandle(dri2_drv_dpy->video, handle, 0, fourcc,
+      dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_OFFSET, &offset);
+
+      // FIXME: calculate the size
+      size_map = stride * height;
+      _eglLog(_EGL_DEBUG, "Image width(%d), height(%d), stride(%d), offset(%d)", width, height, stride, offset);
+
+      ret = drmCreateDCFromHandle(dri2_drv_dpy->video, handle, size_map, fourcc,
                 width, height, stride);
 
       /* create dumb map */
       if (ret == HDC_INVALID) {
-         int visual_idx, size_map;
+         int visual_idx;
          struct drm_mode_map_dumb map_arg;
          void* map;
 
@@ -1490,7 +1495,6 @@ create_minigui_buffer(struct dri2_egl_drv_display *dri2_drv_dpy,
             return NULL;
          }
 
-         size_map = stride * height;
          map = mmap(0, size_map, PROT_READ | PROT_WRITE,
                   MAP_SHARED, dri2_drv_dpy->base.fd, map_arg.offset);
          if (map == MAP_FAILED) {
@@ -1955,6 +1959,13 @@ dri2_initialize_minigui_dri2(_EGLDriver *drv, _EGLDisplay *disp)
       }
    }
 #endif
+
+   if (dri2_dpy->is_different_gpu) {
+      _eglLog(_EGL_WARNING, "DRI2: is_different_gpu TRUE");
+   }
+   else {
+      _eglLog(_EGL_WARNING, "DRI2: is_different_gpu FALSE");
+   }
 
    /* we have to do the check now, because loader_get_user_preferred_fd
     * will return a render-node when the requested gpu is different
