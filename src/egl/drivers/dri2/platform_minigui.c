@@ -1472,7 +1472,8 @@ create_minigui_buffer(struct dri2_egl_drv_display *dri2_drv_dpy,
 
       // FIXME: calculate the size
       size_map = stride * height;
-      _eglLog(_EGL_DEBUG, "Image width(%d), height(%d), stride(%d), offset(%d)", width, height, stride, offset);
+      _eglLog(_EGL_DEBUG, "Image width(%d), height(%d), stride(%d), offset(%d)",
+                    width, height, stride, offset);
 
       ret = drmCreateDCFromHandle(dri2_drv_dpy->video, handle, size_map, fourcc,
                 width, height, stride);
