@@ -41,8 +41,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#define _DEBUG
-
 #include <minigui/common.h>
 #include <minigui/minigui.h>
 #include <minigui/gdi.h>
