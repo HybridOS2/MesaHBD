@@ -1084,7 +1084,7 @@ get_back_bo(struct dri2_egl_drv_surface *dri2_drv_surf)
                                          dri2_drv_surf->base.base.Height,
                                          dri_image_format,
                                          dri2_dpy->is_different_gpu ?
-                                              0 : use_flags,
+                                              0 : (use_flags | __DRI_IMAGE_USE_LINEAR),
                                          NULL);
       }
 
@@ -1444,6 +1444,18 @@ create_minigui_buffer(struct dri2_egl_drv_display *dri2_drv_dpy,
 
    if (num_planes > 1)
       return NULL;
+
+#if 0
+   _DBG_PRINTF("num_planes (%d)\n", num_planes);
+   if (num_planes == 1) {
+       if (dri2_drv_dpy->base.image->fromPlanar) {
+          image = dri2_drv_dpy->base.image->fromPlanar(image, 0, image);
+       }
+       else {
+          _DBG_PRINTF("no fromPlanar method\n");
+       }
+   }
+#endif
 
    if (dri2_drv_dpy->capabilities & MG_DRM_CAPABILITY_PRIME) {
       int fd, stride;
