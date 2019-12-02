@@ -798,8 +798,6 @@ dri2_minigui_create_window_surface(_EGLDriver *drv, _EGLDisplay *disp,
 
    dri2_drv_surf->base.base.SwapInterval = dri2_dpy->default_swap_interval;
 
-   _DBG_PRINTF("default swap interval: %d\n", dri2_dpy->default_swap_interval);
-
    return &dri2_drv_surf->base.base;
 
  cleanup_pixmap:
