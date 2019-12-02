@@ -41,6 +41,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#define _DEBUG
 #include <minigui/common.h>
 #include <minigui/minigui.h>
 #include <minigui/gdi.h>
@@ -796,6 +797,8 @@ dri2_minigui_create_window_surface(_EGLDriver *drv, _EGLDisplay *disp,
    }
 
    dri2_drv_surf->base.base.SwapInterval = dri2_dpy->default_swap_interval;
+
+   _DBG_PRINTF("default swap interval: %d\n", dri2_dpy->default_swap_interval);
 
    return &dri2_drv_surf->base.base;
 
@@ -1919,6 +1922,13 @@ dri2_initialize_minigui_dri2(_EGLDriver *drv, _EGLDisplay *disp)
    if(dri2_dpy->fd < 0) {
       _eglError(EGL_BAD_DISPLAY, "DRI2: not a MiniGUI DRM engine");
       goto cleanup;
+   }
+   else {
+      dri2_dpy->fd = dup(dri2_dpy->fd);
+      if (dri2_dpy->fd < 0) {
+         _eglError(EGL_BAD_DISPLAY, "DRI2: failed to duplicate the video fd");
+         goto cleanup;
+      }
    }
 
    dev = _eglAddDevice(dri2_dpy->fd, false);
