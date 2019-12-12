@@ -79,6 +79,9 @@ struct _egl_global _eglGlobal =
 #ifdef HAVE_X11_PLATFORM
    " EGL_EXT_platform_x11"
 #endif
+#ifdef HAVE_MINIGUI_PLATFORM
+   " EGL_EXT_platform_minigui"
+#endif
 #ifdef HAVE_DRM_PLATFORM
    " EGL_MESA_platform_gbm"
 #endif
