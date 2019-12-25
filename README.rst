@@ -1,13 +1,14 @@
 `Mesa <https://mesa3d.org>`_ - The 3D Graphics Library
 ======================================================
 
+`hiMesa` is the Mesa derivative for HybridOS.
 
 Source
 ------
 
-This repository lives at https://gitlab.freedesktop.org/mesa/mesa.
-Other repositories are likely forks, and code found there is not supported.
+This reposistory lives at https://github.com/FMSoftCN/himesa.
 
+The original Mesa lives at https://gitlab.freedesktop.org/mesa/mesa.
 
 Build & install
 ---------------
@@ -23,7 +24,7 @@ Meson (`docs/meson.html <https://mesa3d.org/meson.html>`_):
   $ meson ..
   $ sudo ninja install
 
-VW: Use the following commands to configure:
+You must specify the library suffix `hos` for HybridOS, for example,
 
 .. code-block:: sh
 
