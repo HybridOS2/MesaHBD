@@ -414,6 +414,9 @@ dri2_minigui_swrast_allocate_buffer(struct dri2_egl_drv_surface *dri2_drv_surf,
       return EGL_FALSE;
    }
 
+   /* close fd here */
+   close(fd);
+
    *data = data_map;
    *size = size_map;
    *dc = memdc;
