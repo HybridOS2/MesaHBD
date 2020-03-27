@@ -1458,22 +1458,24 @@ create_minigui_buffer(struct dri2_egl_drv_display *dri2_drv_dpy,
 #endif
 
    if (dri2_drv_dpy->capabilities & MG_DRM_CAPABILITY_PRIME) {
-      int fd, stride;
+      int fd, stride, offset;
 
       // FIXME: no size info
       dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_FD, &fd);
       dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
-      ret = drmCreateDCFromPrimeFd(dri2_drv_dpy->video, fd, 0, fourcc,
-                                        width, height, stride);
+      dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_OFFSET, &offset);
+      ret = drmCreateDCFromPrimeFdEx(dri2_drv_dpy->video, fd, 0, fourcc, offset,
+              width, height, stride);
       close(fd);
    }
    else if (dri2_drv_dpy->capabilities & MG_DRM_CAPABILITY_NAME) {
-      int name, stride;
+      int name, stride, offset;
 
       dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_NAME, &name);
       dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
-      ret = drmCreateDCFromName(dri2_drv_dpy->video, name, fourcc,
-                width, height, stride);
+      dri2_drv_dpy->base.image->queryImage(image, __DRI_IMAGE_ATTRIB_OFFSET, &offset);
+      ret = drmCreateDCFromNameEx(dri2_drv_dpy->video, name, fourcc, offset,
+              width, height, stride);
    }
    else {
 
@@ -1488,8 +1490,8 @@ create_minigui_buffer(struct dri2_egl_drv_display *dri2_drv_dpy,
       _eglLog(_EGL_DEBUG, "Image width(%d), height(%d), stride(%d), offset(%d)",
                     width, height, stride, offset);
 
-      ret = drmCreateDCFromHandle(dri2_drv_dpy->video, handle, size_map, fourcc,
-                width, height, stride);
+      ret = drmCreateDCFromHandleEx(dri2_drv_dpy->video, handle, size_map, fourcc,
+              offset, width, height, stride);
 
       /* create dumb map */
       if (ret == HDC_INVALID) {
