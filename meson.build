@@ -254,7 +254,7 @@ endif
 
 prog_pkgconfig = find_program('pkg-config')
 
-dep_minigui = dependency('minigui', version : '>= 4.0.4', required : false)
+dep_minigui = dependency('minigui', version : '>= 4.0.7', required : false)
 if dep_minigui.found()
   dep_minigui_headers = declare_dependency(
     compile_args : run_command(prog_pkgconfig, ['minigui', '--cflags']).stdout().split()
