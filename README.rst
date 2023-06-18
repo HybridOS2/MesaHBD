@@ -1,12 +1,12 @@
 `Mesa <https://mesa3d.org>`_ - The 3D Graphics Library
 ======================================================
 
-`hiMesa` is the Mesa derivative for HybridOS.
+`MesaHBD` is the Mesa derivative for HybridOS.
 
 Source
 ------
 
-This reposistory lives at https://github.com/FMSoftCN/himesa.
+This reposistory lives at https://github.com/HybridOS2/MesaHBD.
 
 The original Mesa lives at https://gitlab.freedesktop.org/mesa/mesa.
 
@@ -24,13 +24,13 @@ Meson (`docs/meson.html <https://mesa3d.org/meson.html>`_):
   $ meson ..
   $ sudo ninja install
 
-You must specify the library suffix `hos` for HybridOS, for example,
+You must specify the library suffix `hbd` for HybridOS, for example,
 
 .. code-block:: sh
 
   $ mkdir build
   $ cd build
-  $ meson .. -Dgallium-drivers= -Dvulkan-drivers= -Dllvm=false -Degl-lib-suffix=hos -Dgles-lib-suffix=hos -Dgl-lib-suffix=hos
+  $ meson .. -Dgallium-drivers= -Ddri-drivers=swrast -Dvulkan-drivers= -Dllvm=false -Dglx=disabled -Degl-lib-suffix=hbd -Dgles-lib-suffix=hbd -Dgl-lib-suffix=hbd
   $ sudo ninja install
 
 Support

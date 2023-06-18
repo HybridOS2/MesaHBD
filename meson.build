@@ -279,7 +279,7 @@ endif
 _platforms = get_option('platforms')
 if _platforms.contains('auto')
   if have_minigui
-    _platforms = ['x11', 'minigui', 'drm', 'surfaceless']
+    _platforms = ['minigui', 'drm', 'surfaceless']
   elif system_has_kms_drm
     _platforms = ['x11', 'wayland', 'drm', 'surfaceless']
   elif ['darwin', 'windows', 'cygwin'].contains(host_machine.system())
